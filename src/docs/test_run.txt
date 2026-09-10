@@ -1,0 +1,48 @@
+test_arithmetic_vs_compound_and_daily_vs_rebalance (test_evaluation_backtests.EngineTests.test_arithmetic_vs_compound_and_daily_vs_rebalance) ... ok
+test_daily_risk_does_not_count_initial_fee_as_extra_day (test_evaluation_backtests.EngineTests.test_daily_risk_does_not_count_initial_fee_as_extra_day) ... ok
+test_empty_groups_cash_hold_and_initial_entry (test_evaluation_backtests.EngineTests.test_empty_groups_cash_hold_and_initial_entry) ... ok
+test_exact_fees_cash_balance_and_capital_scale (test_evaluation_backtests.EngineTests.test_exact_fees_cash_balance_and_capital_scale) ... ok
+test_external_targets_align_columns_and_reject_partial_nan (test_evaluation_backtests.EngineTests.test_external_targets_align_columns_and_reject_partial_nan) ... ok
+test_hold_keeps_actual_positions (test_evaluation_backtests.EngineTests.test_hold_keeps_actual_positions) ... ok
+test_metrics_gross_net_turnover_and_defined_drawdown (test_evaluation_backtests.EngineTests.test_metrics_gross_net_turnover_and_defined_drawdown) ... ok
+test_open_execution_and_terminal_liquidation (test_evaluation_backtests.EngineTests.test_open_execution_and_terminal_liquidation) ... ok
+test_simple_and_account_period_returns_match_with_fees (test_evaluation_backtests.EngineTests.test_simple_and_account_period_returns_match_with_fees) ... ok
+test_tradability_freezes_blocked_position (test_evaluation_backtests.EngineTests.test_tradability_freezes_blocked_position) ... ok
+test_turnover_uses_drift_and_cost_both_sides (test_evaluation_backtests.EngineTests.test_turnover_uses_drift_and_cost_both_sides) ... ok
+test_future_missing_price_does_not_remove_stock (test_evaluation_backtests.GroupTests.test_future_missing_price_does_not_remove_stock) ... ok
+test_group_mean_median_and_date_aggregation (test_evaluation_backtests.GroupTests.test_group_mean_median_and_date_aggregation) ... ok
+test_holiday_schedule_and_factor_snapshot (test_evaluation_backtests.GroupTests.test_holiday_schedule_and_factor_snapshot) ... ok
+test_ic_full_pool_and_future_cutoff (test_evaluation_backtests.GroupTests.test_ic_full_pool_and_future_cutoff) ... ok
+test_overlapping_ranges_do_not_add_boundaries (test_evaluation_backtests.GroupTests.test_overlapping_ranges_do_not_add_boundaries) ... ok
+test_price_fallback_is_past_only_and_bounded (test_evaluation_backtests.GroupTests.test_price_fallback_is_past_only_and_bounded) ... ok
+test_ties_and_column_order (test_evaluation_backtests.GroupTests.test_ties_and_column_order) ... ok
+test_weighted_groups_and_independent_config (test_evaluation_backtests.GroupTests.test_weighted_groups_and_independent_config) ... ok
+test_config_examples_and_invalid_options (test_pipeline.PipelineTests.test_config_examples_and_invalid_options) ... ok
+test_external_parquet_and_cli_selects_only_group_return (test_pipeline.PipelineTests.test_external_parquet_and_cli_selects_only_group_return) ... ok
+test_failed_factor_does_not_mask_success (test_pipeline.PipelineTests.test_failed_factor_does_not_mask_success) ... [failed] beta
+[succeeded] alpha
+ok
+test_parallel_independent_groups_metrics_and_four_figures (test_pipeline.PipelineTests.test_parallel_independent_groups_metrics_and_four_figures) ... [succeeded] alpha
+[succeeded] beta
+ok
+test_process_results_match_sequential_and_no_eval_dependency (test_pipeline.PipelineTests.test_process_results_match_sequential_and_no_eval_dependency) ... [succeeded] alpha
+[succeeded] beta
+[succeeded] beta
+[succeeded] alpha
+ok
+test_standard_factor_only_generates_all_twenty_variants (test_pipeline.PipelineTests.test_standard_factor_only_generates_all_twenty_variants) ... [factors] generating standard Factor values
+[succeeded] roe_level.smooth_1d
+ok
+test_artifact_detects_config_changes_and_tampering (test_standard_factors.FactorTests.test_artifact_detects_config_changes_and_tampering) ... ok
+test_variant_cannot_change_operator_or_input (test_standard_factors.FactorTests.test_variant_cannot_change_operator_or_input) ... ok
+test_weekly_four_values_are_not_twenty_daily_values (test_standard_factors.FactorTests.test_weekly_four_values_are_not_twenty_daily_values) ... ok
+test_conflicting_same_day_versions_are_rejected (test_standard_factors.FinancialTests.test_conflicting_same_day_versions_are_rejected) ... ok
+test_current_year_forecast_is_reset_at_year_boundary (test_standard_factors.FinancialTests.test_current_year_forecast_is_reset_at_year_boundary) ... ok
+test_other_stock_event_dates_do_not_change_quarter_lag (test_standard_factors.FinancialTests.test_other_stock_event_dates_do_not_change_quarter_lag) ... ok
+test_revision_updates_current_comparison_without_overwriting_current_level (test_standard_factors.FinancialTests.test_revision_updates_current_comparison_without_overwriting_current_level) ... ok
+test_same_day_batch_and_missing_lag_invalidate_previous_value (test_standard_factors.FinancialTests.test_same_day_batch_and_missing_lag_invalidate_previous_value) ... ok
+
+----------------------------------------------------------------------
+Ran 33 tests in 15.094s
+
+OK
