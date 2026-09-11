@@ -1,0 +1,202 @@
+"""用单个 Parquet 保存和恢复一个因子的回测核心结果。"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterable, Mapping
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+from src.backtest.events import make_curve_views
+
+
+RESULT_FILE_NAMES = {
+    "simple": "simple_backtest.parquet",
+    "account": "account_backtest.parquet",
+}
+
+
+def save_backtest_results(
+    results: Mapping[str, Mapping[str, Any]],
+    output_root: str | Path,
+    mode: str,
+) -> dict[str, Path]:
+    """覆盖保存一批回测结果，保留指标、曲线、成交和换手。"""
+    output_root = Path(output_root)
+    output_paths = {}
+    for factor_name, result in results.items():
+        packed_frames = [
+            _pack_frame(result["definitions"], "definitions"),
+            _pack_frame(result["metrics"], "metrics"),
+        ]
+        for weeks, period_result in result["periods"].items():
+            packed_frames.append(
+                _pack_frame(
+                    period_result["actions"],
+                    "actions",
+                    rebalance_weeks=weeks,
+                )
+            )
+            for group_id, group_result in period_result["groups"].items():
+                curve_views = group_result["curves"]
+                context = {
+                    "rebalance_weeks": weeks,
+                    "group_id": group_id,
+                }
+                packed_frames.extend(
+                    [
+                        _pack_frame(
+                            curve_views["all"],
+                            "curves",
+                            daily_available="daily" in curve_views,
+                            **context,
+                        ),
+                        _pack_frame(
+                            group_result["trades"],
+                            "trades",
+                            **context,
+                        ),
+                        _pack_frame(
+                            group_result["turnover"],
+                            "turnover",
+                            **context,
+                        ),
+                    ]
+                )
+
+        stored_result = pd.concat(packed_frames, ignore_index=True)
+        factor_directory = output_root / factor_name
+        factor_directory.mkdir(parents=True, exist_ok=True)
+        output_path = factor_directory / RESULT_FILE_NAMES[mode]
+        stored_result.to_parquet(output_path, index=False)
+        output_paths[factor_name] = output_path
+    return output_paths
+
+
+def load_backtest_results(
+    factor_names: Iterable[str],
+    output_root: str | Path,
+    mode: str,
+) -> dict[str, dict[str, Any]]:
+    """加载指定因子中已经存在的一类回测结果。"""
+    output_root = Path(output_root)
+    results = {}
+    for factor_name in factor_names:
+        result_path = output_root / factor_name / RESULT_FILE_NAMES[mode]
+        if not result_path.exists():
+            continue
+        stored_result = pd.read_parquet(result_path)
+        results[factor_name] = _restore_backtest_result(stored_result)
+    return results
+
+
+def _restore_backtest_result(
+    stored_result: pd.DataFrame,
+) -> dict[str, Any]:
+    """把扁平记录恢复为 backtest 引擎的周期和分组结构。"""
+    result = {
+        "definitions": _unpack_frame(stored_result, "definitions"),
+        "metrics": _unpack_frame(stored_result, "metrics"),
+        "periods": {},
+    }
+    period_values = stored_result["__rebalance_weeks"].dropna().unique()
+    for weeks_value in sorted(period_values):
+        weeks = int(weeks_value)
+        actions = _unpack_frame(
+            stored_result,
+            "actions",
+            rebalance_weeks=weeks,
+        )
+        group_rows = stored_result.loc[
+            (stored_result["__record_type"] == "curves")
+            & (stored_result["__rebalance_weeks"] == weeks)
+        ]
+        groups = {}
+        for group_id in group_rows["__group_id"].dropna().unique():
+            all_curve = _unpack_frame(
+                stored_result,
+                "curves",
+                rebalance_weeks=weeks,
+                group_id=group_id,
+            )
+            daily_available = bool(
+                group_rows.loc[
+                    group_rows["__group_id"] == group_id,
+                    "__daily_available",
+                ].iloc[0]
+            )
+            groups[group_id] = {
+                "curves": make_curve_views(
+                    all_curve.to_dict("records"),
+                    daily_available,
+                ),
+                "trades": _unpack_frame(
+                    stored_result,
+                    "trades",
+                    rebalance_weeks=weeks,
+                    group_id=group_id,
+                ),
+                "turnover": _unpack_frame(
+                    stored_result,
+                    "turnover",
+                    rebalance_weeks=weeks,
+                    group_id=group_id,
+                ),
+            }
+        result["periods"][weeks] = {
+            "actions": actions,
+            "groups": groups,
+        }
+    return result
+
+
+def _pack_frame(
+    frame: pd.DataFrame,
+    record_type: str,
+    rebalance_weeks: int | None = None,
+    group_id: str | None = None,
+    daily_available: bool | None = None,
+) -> pd.DataFrame:
+    """把一张回测表、上下文和列结构编码成可合并记录。"""
+    column_names = json.dumps(list(frame.columns), ensure_ascii=False)
+    schema_record = pd.DataFrame(
+        {
+            "__record_type": [record_type],
+            "__schema": [True],
+            "__columns": [column_names],
+        }
+    )
+    records = frame.copy()
+    records["__record_type"] = record_type
+    records["__schema"] = False
+    records["__columns"] = None
+    packed_frame = pd.concat([schema_record, records], ignore_index=True)
+    packed_frame["__rebalance_weeks"] = rebalance_weeks
+    packed_frame["__group_id"] = group_id
+    packed_frame["__daily_available"] = daily_available
+    return packed_frame
+
+
+def _unpack_frame(
+    stored_result: pd.DataFrame,
+    record_type: str,
+    rebalance_weeks: int | None = None,
+    group_id: str | None = None,
+) -> pd.DataFrame:
+    """按记录类型、周期和分组恢复一张回测结果表。"""
+    selected = stored_result.loc[
+        stored_result["__record_type"] == record_type
+    ]
+    if rebalance_weeks is not None:
+        selected = selected.loc[
+            selected["__rebalance_weeks"] == rebalance_weeks
+        ]
+    if group_id is not None:
+        selected = selected.loc[selected["__group_id"] == group_id]
+    schema_record = selected.loc[selected["__schema"]].iloc[0]
+    column_names = json.loads(schema_record["__columns"])
+    return selected.loc[~selected["__schema"], column_names].reset_index(
+        drop=True
+    )

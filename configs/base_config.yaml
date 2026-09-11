@@ -1,0 +1,237 @@
+# 所有阶段只由这里的布尔开关控制；CLI 不覆盖阶段选择。
+run:
+  factors: true
+  group_return: true
+  simple_backtest: true
+  account_backtest: true
+  plotter: true
+  max_workers: 4
+  refresh_market_data: false
+
+factors:
+  config_directory: ../examples/config/factors
+
+output:
+  root: ../outputs
+
+market_data:
+  # 本机未发现真实原始数据目录，运行前改为数据说明对应的根目录。
+  source_root: /Users/qiye/TK/data/raw
+  start_date: "2022-01-01"
+  end_date: "2026-08-26"
+  benchmark_index: 000906.SH
+  universe_indices:
+    - 000906.SH
+    - 000852.SH
+  sources:
+    index_price:
+      codes:
+        - 000906.SH
+      fields:
+        - S_DQ_CLOSE
+    stock_quote:
+      fields:
+        - S_DQ_ADJCLOSE
+    financial_indicators:
+      fields:
+        - S_QFA_YOYNETPROFIT
+
+group_return:
+  start: "2022-02-01"
+  end: "2026-08-26"
+  universe_indices:
+    - 000906.SH
+    - 000852.SH
+  grouping:
+    quantile_edges:
+      - [0.0, 0.1]
+      - [0.1, 0.2]
+      - [0.2, 0.3]
+      - [0.3, 0.4]
+      - [0.4, 0.5]
+      - [0.5, 0.6]
+      - [0.6, 0.7]
+      - [0.7, 0.8]
+      - [0.8, 0.9]
+      - [0.9, 1.0]
+    min_stocks: 200
+    missing_factor_policy: exclude
+    weighting:
+      method: equal
+      field: null
+      lag_days: 0
+  sampling:
+    weekday: FRI
+    every_n_weeks: 1
+    anchor_date: "2021-01-01"
+    holiday_policy: previous_trading_day
+  factor_lag_days: 0
+  reference_price: close
+  future_return_days:
+    - 5
+    - 20
+    - 60
+  group_return_agg: mean
+  time_return_agg: mean
+  empty_group_policy: nan
+  insufficient_stocks_policy: nan
+  missing_price_policy: previous_close
+  max_stale_days: null
+
+simple_backtest:
+  start: "2022-02-01"
+  end: "2026-08-26"
+  universe_indices:
+    - 000906.SH
+    - 000852.SH
+  grouping:
+    quantile_edges:
+      - [0.0, 0.1]
+      - [0.1, 0.2]
+      - [0.2, 0.3]
+      - [0.3, 0.4]
+      - [0.4, 0.5]
+      - [0.5, 0.6]
+      - [0.6, 0.7]
+      - [0.7, 0.8]
+      - [0.8, 0.9]
+      - [0.9, 1.0]
+    min_stocks: 200
+    missing_factor_policy: exclude
+    weighting:
+      method: equal
+      field: null
+      lag_days: 0
+  rebalance:
+    weekday: FRI
+    intervals_weeks:
+      - 1
+      - 2
+      - 4
+    anchor_date: "2021-01-01"
+    holiday_policy: previous_trading_day
+  factor_lag_days: 0
+  trade_price: close
+  benchmark:
+    source: index_price
+  initial_entry: first_rebalance
+  initial_capital: 1.0
+  transaction_cost_rate: 0.0
+  charge_initial_cost: true
+  liquidate_at_end: false
+  empty_group_policy: cash
+  insufficient_stocks_policy: error
+  missing_price_policy: error
+  max_stale_days: null
+  curve_frequency: both
+  execution:
+    policy: ideal
+
+account_backtest:
+  start: "2022-02-01"
+  end: "2026-08-26"
+  universe_indices:
+    - 000906.SH
+    - 000852.SH
+  grouping:
+    quantile_edges:
+      - [0.0, 0.1]
+      - [0.1, 0.2]
+      - [0.2, 0.3]
+      - [0.3, 0.4]
+      - [0.4, 0.5]
+      - [0.5, 0.6]
+      - [0.6, 0.7]
+      - [0.7, 0.8]
+      - [0.8, 0.9]
+      - [0.9, 1.0]
+    min_stocks: 200
+    missing_factor_policy: exclude
+    weighting:
+      method: equal
+      field: null
+      lag_days: 0
+  rebalance:
+    weekday: FRI
+    intervals_weeks:
+      - 1
+      - 2
+      - 4
+    anchor_date: "2021-01-01"
+    holiday_policy: previous_trading_day
+  factor_lag_days: 0
+  trade_price: close
+  benchmark:
+    source: index_price
+  initial_entry: first_rebalance
+  initial_capital: 1000000
+  transaction_cost_rate: 0.0
+  charge_initial_cost: true
+  liquidate_at_end: false
+  empty_group_policy: cash
+  insufficient_stocks_policy: error
+  missing_price_policy: error
+  max_stale_days: null
+  curve_frequency: both
+  execution:
+    policy: ideal
+
+metrics:
+  risk_free_rate: 0.0
+  return_frequency: daily
+  annual_trading_days: 252
+  annual_weeks: 52
+  include_initial_turnover: true
+  simple_annual_return: linear
+  account_annual_return: compound
+
+plots:
+  formats:
+    - png
+    - pdf
+  dpi: 160
+  width: 13.0
+  row_height: 3.4
+  font_family: DejaVu Sans
+  curve_frequency: daily
+  missing_results: error
+  note: ""
+  legend_columns: 4
+  distribution:
+    enabled: true
+    bins: 60
+    density: true
+    kde: true
+    clip_quantiles: null
+    max_points: 200000
+  evaluation:
+    enabled: true
+    group_panel: left
+    group_colors:
+      - "#A91E22"
+      - "#A68B32"
+      - "#137A3F"
+    ic_color: "#D06A2D"
+    rank_ic_color: "#174A73"
+  simple:
+    enabled: true
+    layout: rows
+    group_colors:
+      - "#A91E22"
+      - "#A68B32"
+      - "#137A3F"
+    benchmark_color: "#777777"
+    summary_quantile: [0.9, 1.0]
+    metric_columns:
+      - annual_return
+      - annual_volatility
+      - sharpe
+      - max_drawdown
+      - annual_turnover
+  account:
+    enabled: true
+    layout: rows
+    group_colors:
+      - "#CB3C3C"
+      - "#198754"
+    benchmark_color: "#888888"
