@@ -2,7 +2,7 @@
 提供一个可由 YAML 动态导入的季度成长因子示例。
 
 本模块位于示例 Factor 实现层。``GrowthFactor`` 从 ``MarketData`` 读取财务指标及其
-报告期，``_calc_stock_sue`` 在单只股票当时已知的季度历史上计算 SUE；输出仍交给
+报告期，先构造季度乘股票矩阵并计算历史统计量，再映射回日频 SUE 面板；输出仍交给
 Factors 引擎统一对齐和应用股票池，本模块不读取 YAML、不扫描配置，也不保存结果。
 """
 
@@ -45,7 +45,7 @@ class GrowthFactor(Factor):
         - 返回与财务指标面板同索引、同股票列的浮点 DataFrame。
 
         功能和用途：
-        - 对每只股票独立识别报告状态变化，再使用严格相邻的自然季度历史计算 SUE。
+        - 使用季度乘股票矩阵统一计算严格相邻自然季度的历史均值和标准差。
         - 这里只实现公式；最终交易日、股票列和历史成员资格由批量引擎统一处理。
         """
         factor_params = self.config["params"]
@@ -60,46 +60,78 @@ class GrowthFactor(Factor):
             "REPORT_PERIOD",
         )
 
-        stock_factor_values = {
-            stock_code: _calc_stock_sue(
-                values=financial_values[stock_code],
-                report_periods=report_periods[stock_code],
-                history_quarters=history_quarters,
-            )
-            for stock_code in financial_values.columns
-        }
+        quarterly_values = _build_quarterly_value_panel(
+            financial_values,
+            report_periods,
+        )
+        prior_quarter_values = quarterly_values.shift(1)
+        rolling_history = prior_quarter_values.rolling(
+            window=history_quarters,
+            min_periods=history_quarters,
+        )
+        quarterly_history_means = rolling_history.mean()
+        quarterly_history_standard_deviations = rolling_history.std(ddof=1)
+        (
+            daily_history_means,
+            daily_history_standard_deviations,
+        ) = _map_quarter_statistics_to_daily(
+            quarterly_history_means,
+            quarterly_history_standard_deviations,
+            report_periods,
+        )
+
+        financial_value_array = financial_values.to_numpy(
+            dtype="float64",
+            na_value=np.nan,
+        )
+        valid_factor_values = (
+            np.isfinite(financial_value_array)
+            & np.isfinite(daily_history_means)
+            & np.isfinite(daily_history_standard_deviations)
+            & (daily_history_standard_deviations > 0)
+        )
+        factor_value_array = np.full(
+            financial_value_array.shape,
+            np.nan,
+            dtype="float64",
+        )
+        np.divide(
+            financial_value_array - daily_history_means,
+            daily_history_standard_deviations,
+            out=factor_value_array,
+            where=valid_factor_values,
+        )
         return pd.DataFrame(
-            stock_factor_values,
+            factor_value_array,
             index=financial_values.index,
+            columns=financial_values.columns,
         )
 
 
-# 根据单只股票当时已知的季度记录更新并保持 SUE 状态。
-def _calc_stock_sue(
-    values: pd.Series,
-    report_periods: pd.Series,
-    history_quarters: int,
-) -> pd.Series:
+# 从日频 PIT 状态提取每个报告季度最终已知的股票值。
+def _build_quarterly_value_panel(
+    financial_values: pd.DataFrame,
+    report_periods: pd.DataFrame,
+) -> pd.DataFrame:
     """
-    计算单只股票的日频季度 SUE。
+    构造报告季度乘股票的财务值矩阵。
 
     输入：
-    - values：财务字段的日频 PIT 状态，索引为交易日。
-    - report_periods：与 ``values`` 对齐的当前报告期状态。
-    - history_quarters：当前季度必须比较的此前自然季度数量。
+    - financial_values：日期乘股票的财务字段 PIT 面板。
+    - report_periods：与财务值完全对齐的当前报告期面板。
 
     输出：
-    - 返回与输入同索引的浮点 Series；历史不完整、当前值缺失或历史标准差为零的
-      报告状态为 ``NaN``。
+    - 返回索引为连续自然季度、列为股票代码的浮点 DataFrame。
+    - 股票缺少某个自然季度或该季度最终状态为空时，对应位置为 ``NaN``。
 
     功能和用途：
-    - 新报告出现或当前报告数值修订时，更新当时已知的报告期数值映射。
-    - 当前值只与严格相邻的前 N 个自然季度比较，同报告修订不会被重复计为历史季度。
-    - 每次事件算出的值保持到下一次报告状态变化，供日频回测直接使用。
+    - 使用矩阵运算识别报告期或财务值发生变化的日频状态，只保留稀疏事件记录。
+    - 同一股票同一报告季度存在修订时保留最后状态，使它成为后续季度当时已知的历史值。
+    - 连续季度索引确保 rolling 窗口表示自然季度，而不是已有记录的行数。
     """
-    previous_values = values.shift()
-    values_both_missing = values.isna() & previous_values.isna()
-    value_changed = values.ne(previous_values) & ~values_both_missing
+    previous_values = financial_values.shift()
+    values_both_missing = financial_values.isna() & previous_values.isna()
+    value_changed = financial_values.ne(previous_values) & ~values_both_missing
 
     previous_report_periods = report_periods.shift()
     periods_both_missing = report_periods.isna() & previous_report_periods.isna()
@@ -110,43 +142,100 @@ def _calc_stock_sue(
         report_period_changed | value_changed
     )
 
-    known_quarter_values: dict[pd.Period, float] = {}
-    event_factor_values: list[float] = []
-    for event_date in report_periods.index[state_changed]:
-        current_quarter = pd.Timestamp(
-            report_periods.at[event_date]
-        ).to_period("Q")
-        current_value = values.at[event_date]
-        known_quarter_values[current_quarter] = current_value
-        history_values = pd.Series(
-            [
-                known_quarter_values.get(
-                    current_quarter - quarter_offset,
-                    np.nan,
-                )
-                for quarter_offset in range(history_quarters, 0, -1)
-            ],
-            dtype="float64",
-        )
-        history_standard_deviation = history_values.std(ddof=1)
-
-        if (
-            pd.isna(current_value)
-            or history_values.isna().any()
-            or history_standard_deviation == 0
-        ):
-            factor_value = np.nan
-        else:
-            factor_value = (
-                current_value - history_values.mean()
-            ) / history_standard_deviation
-        event_factor_values.append(factor_value)
-
-    factor_values_by_state = pd.Series(
-        event_factor_values,
-        index=range(1, len(event_factor_values) + 1),
-        dtype="float64",
+    event_date_positions, event_stock_positions = np.nonzero(
+        state_changed.to_numpy()
     )
-    state_ids = state_changed.cumsum()
-    daily_factor_values = state_ids.map(factor_values_by_state)
-    return daily_factor_values.where(report_periods.notna())
+    report_period_array = report_periods.to_numpy(dtype="datetime64[ns]")
+    financial_value_array = financial_values.to_numpy(
+        dtype="float64",
+        na_value=np.nan,
+    )
+    event_records = pd.DataFrame(
+        {
+            "report_quarter": pd.DatetimeIndex(
+                report_period_array[
+                    event_date_positions,
+                    event_stock_positions,
+                ]
+            ).to_period("Q"),
+            "stock_code": financial_values.columns.take(
+                event_stock_positions
+            ),
+            "value": financial_value_array[
+                event_date_positions,
+                event_stock_positions,
+            ],
+        }
+    )
+    latest_quarter_records = event_records.drop_duplicates(
+        ["report_quarter", "stock_code"],
+        keep="last",
+    )
+    quarter_index = pd.period_range(
+        latest_quarter_records["report_quarter"].min(),
+        latest_quarter_records["report_quarter"].max(),
+        freq="Q",
+        name="report_quarter",
+    )
+    return latest_quarter_records.pivot(
+        index="report_quarter",
+        columns="stock_code",
+        values="value",
+    ).reindex(
+        index=quarter_index,
+        columns=financial_values.columns,
+    )
+
+
+# 按每日当前报告季度一次性取回历史均值和标准差。
+def _map_quarter_statistics_to_daily(
+    quarterly_means: pd.DataFrame,
+    quarterly_standard_deviations: pd.DataFrame,
+    report_periods: pd.DataFrame,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    将季度历史统计量映射到日频股票面板。
+
+    输入：
+    - quarterly_means：连续自然季度乘股票的历史均值矩阵。
+    - quarterly_standard_deviations：与均值矩阵对齐的历史标准差矩阵。
+    - report_periods：日期乘股票的当前报告期面板，股票列顺序必须与两个季度矩阵一致。
+
+    输出：
+    - 返回 ``(日频历史均值, 日频历史标准差)``，两个浮点数组均与报告期面板同形状。
+    - 没有报告期的位置在两个数组中均为 ``NaN``。
+
+    功能和用途：
+    - 把报告期月份编码为季度行位置，再用 NumPy 高级索引一次性选择所有日股数据。
+    - 均值与标准差共享同一位置矩阵，避免重复转换大型日频报告期面板。
+    - 该映射不逐股票调用 reindex，使季度 rolling 结果可高效恢复为日频状态。
+    """
+    report_months = report_periods.to_numpy(dtype="datetime64[M]")
+    valid_report_periods = ~np.isnat(report_months)
+    report_quarter_ordinals = np.floor_divide(
+        report_months.astype("int64"),
+        3,
+    )
+    first_quarter_ordinal = quarterly_means.index[0].ordinal
+    report_quarter_positions = (
+        report_quarter_ordinals - first_quarter_ordinal
+    )
+    safe_quarter_positions = np.where(
+        valid_report_periods,
+        report_quarter_positions,
+        0,
+    )
+    stock_positions = np.arange(report_periods.shape[1])
+    daily_means = quarterly_means.to_numpy(dtype="float64")[
+        safe_quarter_positions,
+        stock_positions,
+    ]
+    daily_standard_deviations = quarterly_standard_deviations.to_numpy(
+        dtype="float64"
+    )[
+        safe_quarter_positions,
+        stock_positions,
+    ]
+    daily_means[~valid_report_periods] = np.nan
+    daily_standard_deviations[~valid_report_periods] = np.nan
+    return daily_means, daily_standard_deviations
