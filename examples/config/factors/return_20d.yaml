@@ -1,0 +1,6 @@
+name: return_20d
+implementation:
+  module: src.factors.ExampleFactor
+  class: ExampleFactor
+params:
+  lookback_days: 20

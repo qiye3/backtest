@@ -1,0 +1,20 @@
+market_data:
+  source_root: /app/openclaw/.openclaw/workspace/.cowork/workspace/default/【指数增强策略】数据获取/data
+  start_date: "2022-01-01"
+  end_date: "2026-08-26"
+  benchmark_index: 000906.SH
+  universe_indices:
+    - 000906.SH
+    - 000852.SH
+  sources:
+    index_price:
+      codes:
+        - 000906.SH
+      fields:
+        - S_DQ_CLOSE
+    stock_quote:
+      fields:
+        - S_DQ_ADJCLOSE
+    financial_indicators:
+      fields:
+        - S_QFA_YOYNETPROFIT

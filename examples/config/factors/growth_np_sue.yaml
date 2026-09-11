@@ -1,0 +1,7 @@
+name: growth_np_sue
+implementation:
+  module: examples.code.GrowthFactor
+  class: GrowthFactor
+params:
+  value_field: S_QFA_YOYNETPROFIT
+  history_quarters: 8
