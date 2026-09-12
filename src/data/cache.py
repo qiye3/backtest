@@ -1,9 +1,9 @@
 """
 管理 MarketData 的来源级 Parquet 缓存。
 
-本模块位于面板构造与 ``MarketData`` 编排之间，负责根据 YAML 文件名确定固定缓存
-目录，并按数据来源读取或保存一个 Parquet 文件。缓存固定落在项目根的 ``data``
-目录；本模块不判断原始 CSV 是否更新，也不参与面板计算。
+本模块位于面板构造与 ``MarketData`` 编排之间，负责根据 YAML 文件名和显式缓存根
+目录确定固定缓存位置，并按数据来源读取或保存一个 Parquet 文件；本模块不判断原始
+CSV 是否更新，也不参与面板计算。
 """
 
 from __future__ import annotations
@@ -13,26 +13,29 @@ from pathlib import Path
 import pandas as pd
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CACHE_ROOT = PROJECT_ROOT / "data"
-
-
 # 根据 YAML 文件名确定可重复覆盖的固定缓存目录。
-def resolve_market_cache_directory(config_path: Path) -> Path:
+def resolve_market_cache_directory(
+    config_path: Path,
+    cache_root: str | Path,
+) -> Path:
     """
     解析本次 MarketData 使用的缓存目录。
 
     输入：
     - config_path：构建市场数据所使用的 YAML 文件路径。
+    - cache_root：绝对路径或相对 YAML 所在目录的市场缓存根目录。
 
     输出：
-    - 返回 ``<项目根>/data/<配置名>`` 路径，不主动创建目录。
+    - 返回 ``<缓存根>/<配置名>`` 路径，不主动创建目录。
 
     功能和用途：
     - 同一 YAML 始终使用同一个目录，``refresh=True`` 时直接覆盖其中的来源缓存。
     - YAML 内容修改后由调用方显式刷新，不再为每次配置变化生成新目录。
     """
-    return CACHE_ROOT / config_path.stem
+    resolved_cache_root = Path(cache_root).expanduser()
+    if not resolved_cache_root.is_absolute():
+        resolved_cache_root = config_path.parent / resolved_cache_root
+    return resolved_cache_root.resolve() / config_path.stem
 
 
 # 缓存存在时读取完整来源面板，不存在时通知编排层重新构建。

@@ -27,7 +27,6 @@ from src.backtest.rebalance import (
 )
 from src.data.market_data import MarketData
 
-
 ACCOUNT_TRADE_COLUMNS = [
     "date",
     "timestamp",

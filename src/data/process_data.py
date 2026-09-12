@@ -16,7 +16,6 @@ import pandas as pd
 
 from src.data.load_data import DATA_SOURCE_SPECS
 
-
 # ===================== 来源面板入口 ===================== #
 
 # 按数据源的真实时间语义构造一个完整的来源级面板。

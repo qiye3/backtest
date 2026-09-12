@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from numbers import Real
 from pathlib import Path
@@ -13,7 +13,6 @@ import pandas as pd
 import yaml
 
 from src.group_return.grouping import validate_ranges
-
 
 STAGE_NAMES = [
     "factors",

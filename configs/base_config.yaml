@@ -9,16 +9,17 @@ run:
   refresh_market_data: false
 
 factors:
-  config_directory: ../examples/config/factors
+  config_directory: ../examples/config/base_factors
 
 output:
   root: ../outputs
 
 market_data:
-  # 本机未发现真实原始数据目录，运行前改为数据说明对应的根目录。
-  source_root: /Users/qiye/TK/data/raw
-  start_date: "2022-01-01"
-  end_date: "2026-08-26"
+  # 仓库内置 synthetic 数据；生产运行时替换成真实原始数据根。
+  source_root: ../examples/data
+  cache_root: ../data
+  start_date: "2024-01-02"
+  end_date: "2024-06-28"
   benchmark_index: 000906.SH
   universe_indices:
     - 000906.SH
@@ -32,29 +33,21 @@ market_data:
     stock_quote:
       fields:
         - S_DQ_ADJCLOSE
-    financial_indicators:
-      fields:
-        - S_QFA_YOYNETPROFIT
 
 group_return:
-  start: "2022-02-01"
-  end: "2026-08-26"
+  start: "2024-02-02"
+  end: "2024-06-07"
   universe_indices:
     - 000906.SH
     - 000852.SH
   grouping:
     quantile_edges:
-      - [0.0, 0.1]
-      - [0.1, 0.2]
-      - [0.2, 0.3]
-      - [0.3, 0.4]
-      - [0.4, 0.5]
-      - [0.5, 0.6]
-      - [0.6, 0.7]
-      - [0.7, 0.8]
-      - [0.8, 0.9]
-      - [0.9, 1.0]
-    min_stocks: 200
+      - [0.0, 0.2]
+      - [0.2, 0.4]
+      - [0.4, 0.6]
+      - [0.6, 0.8]
+      - [0.8, 1.0]
+    min_stocks: 20
     missing_factor_policy: exclude
     weighting:
       method: equal
@@ -63,14 +56,13 @@ group_return:
   sampling:
     weekday: FRI
     every_n_weeks: 1
-    anchor_date: "2021-01-01"
+    anchor_date: "2024-01-05"
     holiday_policy: previous_trading_day
   factor_lag_days: 0
   reference_price: close
   future_return_days:
     - 5
     - 20
-    - 60
   group_return_agg: mean
   time_return_agg: mean
   empty_group_policy: nan
@@ -79,24 +71,19 @@ group_return:
   max_stale_days: null
 
 simple_backtest:
-  start: "2022-02-01"
-  end: "2026-08-26"
+  start: "2024-02-02"
+  end: "2024-06-21"
   universe_indices:
     - 000906.SH
     - 000852.SH
   grouping:
     quantile_edges:
-      - [0.0, 0.1]
-      - [0.1, 0.2]
-      - [0.2, 0.3]
-      - [0.3, 0.4]
-      - [0.4, 0.5]
-      - [0.5, 0.6]
-      - [0.6, 0.7]
-      - [0.7, 0.8]
-      - [0.8, 0.9]
-      - [0.9, 1.0]
-    min_stocks: 200
+      - [0.0, 0.2]
+      - [0.2, 0.4]
+      - [0.4, 0.6]
+      - [0.6, 0.8]
+      - [0.8, 1.0]
+    min_stocks: 20
     missing_factor_policy: exclude
     weighting:
       method: equal
@@ -107,8 +94,7 @@ simple_backtest:
     intervals_weeks:
       - 1
       - 2
-      - 4
-    anchor_date: "2021-01-01"
+    anchor_date: "2024-01-05"
     holiday_policy: previous_trading_day
   factor_lag_days: 0
   trade_price: close
@@ -128,24 +114,19 @@ simple_backtest:
     policy: ideal
 
 account_backtest:
-  start: "2022-02-01"
-  end: "2026-08-26"
+  start: "2024-02-02"
+  end: "2024-06-21"
   universe_indices:
     - 000906.SH
     - 000852.SH
   grouping:
     quantile_edges:
-      - [0.0, 0.1]
-      - [0.1, 0.2]
-      - [0.2, 0.3]
-      - [0.3, 0.4]
-      - [0.4, 0.5]
-      - [0.5, 0.6]
-      - [0.6, 0.7]
-      - [0.7, 0.8]
-      - [0.8, 0.9]
-      - [0.9, 1.0]
-    min_stocks: 200
+      - [0.0, 0.2]
+      - [0.2, 0.4]
+      - [0.4, 0.6]
+      - [0.6, 0.8]
+      - [0.8, 1.0]
+    min_stocks: 20
     missing_factor_policy: exclude
     weighting:
       method: equal
@@ -156,8 +137,7 @@ account_backtest:
     intervals_weeks:
       - 1
       - 2
-      - 4
-    anchor_date: "2021-01-01"
+    anchor_date: "2024-01-05"
     holiday_policy: previous_trading_day
   factor_lag_days: 0
   trade_price: close
@@ -188,8 +168,7 @@ metrics:
 plots:
   formats:
     - png
-    - pdf
-  dpi: 160
+  dpi: 100
   width: 13.0
   row_height: 3.4
   font_family: DejaVu Sans
@@ -203,7 +182,7 @@ plots:
     density: true
     kde: true
     clip_quantiles: null
-    max_points: 200000
+    max_points: 100000
   evaluation:
     enabled: true
     group_panel: left
@@ -221,7 +200,7 @@ plots:
       - "#A68B32"
       - "#137A3F"
     benchmark_color: "#777777"
-    summary_quantile: [0.9, 1.0]
+    summary_quantile: [0.8, 1.0]
     metric_columns:
       - annual_return
       - annual_volatility

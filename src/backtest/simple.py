@@ -23,7 +23,6 @@ from src.backtest.prices import (
 from src.backtest.rebalance import EPSILON, drift_weights, rebalance_weights
 from src.data.market_data import MarketData
 
-
 SIMPLE_TRADE_COLUMNS = [
     "date",
     "timestamp",

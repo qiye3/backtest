@@ -24,7 +24,6 @@ from src.data.calendar import build_trading_calendar
 from src.data.load_data import DATA_SOURCE_SPECS, load_data, load_index_members
 from src.data.process_data import build_membership_panel, build_source_panel
 
-
 MEMBERSHIP_SOURCE = "index_membership"
 REQUIRED_UNIVERSE_INDICES = {"000906.SH", "000852.SH"}
 
@@ -97,12 +96,18 @@ class MarketData:
         功能和用途：
         - 先构建指数行情以确定唯一交易日日历，再构建历史成员和股票列范围。
         - 之后逐个来源执行缓存读取或“原始长表→日频面板→Parquet”的构建链路。
-        - 原始数据路径、日期、来源与字段全部由 YAML 决定，缓存固定写入项目 ``data``。
+        - 原始数据、缓存路径、日期、来源与字段全部由 YAML 决定。
         """
         resolved_config_path = Path(config_path).expanduser().resolve()
         market_data_config = _read_market_data_config(resolved_config_path)
-        cache_directory = resolve_market_cache_directory(resolved_config_path)
-        data_root = Path(market_data_config["source_root"]).expanduser().resolve()
+        cache_directory = resolve_market_cache_directory(
+            resolved_config_path,
+            market_data_config["cache_root"],
+        )
+        data_root = Path(market_data_config["source_root"]).expanduser()
+        if not data_root.is_absolute():
+            data_root = resolved_config_path.parent / data_root
+        data_root = data_root.resolve()
         start_date = pd.Timestamp(market_data_config["start_date"])
         end_date = pd.Timestamp(market_data_config["end_date"])
         benchmark_index = str(market_data_config["benchmark_index"])
@@ -243,6 +248,7 @@ def _validate_market_data_config(market_data_config: Mapping[str, Any]) -> None:
     """
     required_keys = {
         "source_root",
+        "cache_root",
         "start_date",
         "end_date",
         "benchmark_index",

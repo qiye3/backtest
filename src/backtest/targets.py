@@ -18,7 +18,6 @@ import pandas as pd
 from src.data.market_data import MarketData
 from src.group_return.grouping import build_group_definitions, group_cross_sections
 
-
 WEEKDAY_NUMBER = {
     "MON": 0,
     "TUE": 1,

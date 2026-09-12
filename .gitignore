@@ -33,7 +33,7 @@ venv/
 env/
 ENV/
 
-# Testing / coverage
+# Tests and tooling
 .pytest_cache/
 .coverage
 .coverage.*
@@ -43,33 +43,26 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 .hypothesis/
-
-# Jupyter
 .ipynb_checkpoints/
 
-# Environment / secrets
+# Local settings
 .env
 .env.*
 !.env.example
-
-# IDEs
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
 
-# Factor cache and local data
-data/
-*.parquet
-*.feather
-*.h5
-*.hdf5
-*.pkl
-*.pickle
-
-# Local run outputs (keep checked-in examples)
-outputs/
-results/
-logs/
+# Generated caches and results
+/data/
+/outputs/
+/results/
+/logs/
 *.log
+*.parquet
+
+# The compact synthetic raw data is a checked-in runnable example.
+!examples/data/
+!examples/data/**

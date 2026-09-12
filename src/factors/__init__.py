@@ -8,10 +8,9 @@
 """
 
 from src.factors.base import Factor
-from src.factors.ExampleFactor import ExampleFactor
 from src.factors.config import load_factor, load_factors
 from src.factors.engine import calc_factors
-
+from src.factors.ExampleFactor import ExampleFactor
 
 __all__ = [
     "ExampleFactor",

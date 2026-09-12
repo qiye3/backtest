@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pandas as pd
 
-
 FACTOR_FILE_NAME = "factor.parquet"
 
 

@@ -1,5 +1,6 @@
 market_data:
   source_root: /app/openclaw/.openclaw/workspace/.cowork/workspace/default/【指数增强策略】数据获取/data
+  cache_root: ../../data
   start_date: "2022-01-01"
   end_date: "2026-08-26"
   benchmark_index: 000906.SH

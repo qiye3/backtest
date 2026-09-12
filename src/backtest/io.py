@@ -11,7 +11,6 @@ import pandas as pd
 
 from src.backtest.events import make_curve_views
 
-
 RESULT_FILE_NAMES = {
     "simple": "simple_backtest.parquet",
     "account": "account_backtest.parquet",

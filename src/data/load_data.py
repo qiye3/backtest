@@ -15,7 +15,6 @@ from typing import Any, Literal, Mapping, Sequence
 
 import pandas as pd
 
-
 SourceKind = Literal["daily", "event", "financial", "interval", "index_weight"]
 
 
