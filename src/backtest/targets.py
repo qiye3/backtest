@@ -99,17 +99,17 @@ def rebalance_dates(
     start: str,
     end: str,
     rebalance: Mapping[str, Any],
-    weeks: int,
+    interval: int,
     initial_entry: str,
 ) -> pd.DatetimeIndex:
     """
-    按固定锚定周构造一个调仓周期的真实交易日。
+    按日度或固定锚定周规则构造一个调仓周期的真实交易日。
 
-    输入：交易日历、回测区间、调仓规则、周间隔和首次建仓
-    方式。
+    输入：交易日历、回测区间、调仓规则、对应频率下的间隔和首次建仓方式。
     输出：按时间升序排列的调仓交易日。
 
-    节假日回退只允许落在目标日期所在自然周；
+    日度模式从区间首个交易日起每隔 N 个交易日调仓；周度模式的节假日回退只允许
+    落在目标日期所在自然周；
     ``initial_entry=start`` 会额外加入区间内第一个交易日。
     """
     start_date = pd.Timestamp(start)
@@ -118,6 +118,31 @@ def rebalance_dates(
     if available_dates.empty:
         raise ValueError("回测配置区间内没有交易日")
 
+    if rebalance["frequency"] == "daily":
+        dates = pd.DatetimeIndex(available_dates[::interval], name="date")
+    else:
+        dates = _weekly_rebalance_dates(
+            calendar=calendar,
+            start_date=start_date,
+            end_date=end_date,
+            rebalance=rebalance,
+            interval=interval,
+        )
+    if initial_entry == "start":
+        dates = pd.DatetimeIndex([available_dates[0]], name="date").union(dates)
+    if dates.empty:
+        raise ValueError("回测区间内没有调仓日")
+    return dates
+
+
+def _weekly_rebalance_dates(
+    calendar: pd.DatetimeIndex,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+    rebalance: Mapping[str, Any],
+    interval: int,
+) -> pd.DatetimeIndex:
+    """根据锚定周、目标星期和节假日规则生成周度调仓日。"""
     anchor_monday = pd.Timestamp(rebalance["anchor_date"]).normalize()
     anchor_monday -= pd.Timedelta(days=anchor_monday.weekday())
     first_monday = start_date.normalize() - pd.Timedelta(days=start_date.weekday())
@@ -125,7 +150,7 @@ def rebalance_dates(
     selected_dates = []
     for week_start in pd.date_range(first_monday, end_date, freq="7D"):
         week_number = (week_start - anchor_monday).days // 7
-        if week_number % weeks:
+        if week_number % interval:
             continue
 
         target_date = week_start + pd.Timedelta(
@@ -147,13 +172,7 @@ def rebalance_dates(
 
         if start_date <= selected_date <= end_date:
             selected_dates.append(selected_date)
-
-    dates = pd.DatetimeIndex(selected_dates, name="date")
-    if initial_entry == "start":
-        dates = pd.DatetimeIndex([available_dates[0]], name="date").union(dates)
-    if dates.empty:
-        raise ValueError("回测区间内没有调仓日")
-    return dates
+    return pd.DatetimeIndex(selected_dates, name="date")
 
 
 def lagged_rows(
@@ -185,13 +204,12 @@ def build_targets(
     factor_panel: pd.DataFrame,
     context: TargetContext,
     settings: Mapping[str, Any],
-    weeks: int,
+    interval: int,
 ) -> dict[str, Any]:
     """
     矩阵化生成一个因子、一个调仓周期的全部分组目标。
 
-    输入：标准日频因子面板、共享目标上下文、回测配置和调仓
-    周数。
+    输入：标准日频因子面板、共享目标上下文、回测配置和对应频率下的调仓间隔。
     输出：分组定义、动作、成员、各组目标权重和调仓日期。
 
     全 ``NaN`` 目标行表示保持真实旧持仓；全零行表示清仓变现金。
@@ -201,7 +219,7 @@ def build_targets(
         start=settings["start"],
         end=settings["end"],
         rebalance=settings["rebalance"],
-        weeks=weeks,
+        interval=interval,
         initial_entry=settings["initial_entry"],
     )
     aligned_factor_panel = factor_panel.reindex(columns=context.stock_codes)

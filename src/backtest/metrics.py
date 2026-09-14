@@ -25,13 +25,13 @@ def calculate_metrics(
     gross_result: Mapping[str, Any],
     mode: str,
     metrics_settings: Mapping[str, Any],
-    weeks: int,
+    rebalance_frequency: str,
+    rebalance_interval: int,
 ) -> dict[str, Any]:
     """
     汇总一个分组组合的费后、费前、风险和换手指标。
 
-    输入：费后结果、零费率对照结果、回测模式、指标配置和调仓
-    周数。
+    输入：费后结果、零费率对照结果、回测模式、指标配置、调仓频率和对应间隔。
     输出：字段顺序固定的一行指标字典。
     """
     full_curve = result["curves"]["all"]
@@ -58,7 +58,8 @@ def calculate_metrics(
             result=result,
             mode=mode,
             metrics_settings=metrics_settings,
-            weeks=weeks,
+            rebalance_frequency=rebalance_frequency,
+            rebalance_interval=rebalance_interval,
         )
     )
     metrics.update(
@@ -194,7 +195,8 @@ def _risk_metrics(
     result: Mapping[str, Any],
     mode: str,
     metrics_settings: Mapping[str, Any],
-    weeks: int,
+    rebalance_frequency: str,
+    rebalance_interval: int,
 ) -> dict[str, Any]:
     """按配置频率计算波动率、Sharpe 和相对基准风险。"""
     frequency = metrics_settings["return_frequency"]
@@ -218,8 +220,14 @@ def _risk_metrics(
 
     if frequency == "daily":
         periods_per_year = metrics_settings["annual_trading_days"]
+    elif rebalance_frequency == "daily":
+        periods_per_year = (
+            metrics_settings["annual_trading_days"] / rebalance_interval
+        )
     else:
-        periods_per_year = metrics_settings["annual_weeks"] / weeks
+        periods_per_year = (
+            metrics_settings["annual_weeks"] / rebalance_interval
+        )
     period_risk_free = np.expm1(
         np.log1p(metrics_settings["risk_free_rate"]) / periods_per_year
     )

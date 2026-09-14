@@ -56,11 +56,11 @@ def run_backtests(
     )
 
     factor_items = list(factor_panels.items())
-    rebalance_intervals = settings["rebalance"]["intervals_weeks"]
+    rebalance_intervals = settings["rebalance"]["intervals"]
     target_tasks = [
-        (factor_name, factor_panel, weeks)
+        (factor_name, factor_panel, interval)
         for factor_name, factor_panel in factor_items
-        for weeks in rebalance_intervals
+        for interval in rebalance_intervals
     ]
 
     if max_workers == 1:
@@ -105,6 +105,7 @@ def run_backtests(
         definitions=target_context.definitions,
         target_results=target_results,
         group_results=group_results,
+        rebalance_frequency=settings["rebalance"]["frequency"],
     )
 
 
@@ -126,14 +127,14 @@ def _build_target_task(
     settings: Mapping[str, Any],
 ) -> tuple[str, int, dict[str, Any]]:
     """构造一个因子和一个调仓周期的全部分组目标。"""
-    factor_name, factor_panel, weeks = task
+    factor_name, factor_panel, interval = task
     target_result = build_targets(
         factor_panel=factor_panel,
         context=target_context,
         settings=settings,
-        weeks=weeks,
+        interval=interval,
     )
-    return factor_name, weeks, target_result
+    return factor_name, interval, target_result
 
 
 def _group_tasks(
@@ -143,11 +144,11 @@ def _group_tasks(
     return [
         (
             factor_name,
-            weeks,
+            interval,
             group_id,
             target_result["target_weights"][group_id],
         )
-        for factor_name, weeks, target_result in target_results
+        for factor_name, interval, target_result in target_results
         for group_id in target_result["definitions"]["group_id"]
     ]
 
@@ -161,7 +162,7 @@ def _run_group_task(
     need_daily: bool,
 ) -> tuple[str, int, str, dict[str, Any], dict[str, Any]]:
     """运行一个分组组合的费后和零费率对照，并计算指标。"""
-    factor_name, weeks, group_id, target_weights = task
+    factor_name, interval, group_id, target_weights = task
     runner = (
         _run_simple_with_context
         if mode == "simple"
@@ -188,7 +189,8 @@ def _run_group_task(
             gross_result=gross_result,
             mode=mode,
             metrics_settings=metrics_settings,
-            weeks=weeks,
+            rebalance_frequency=settings["rebalance"]["frequency"],
+            rebalance_interval=interval,
         ),
     }
     _attach_gross_curves(result, gross_result, mode)
@@ -196,7 +198,7 @@ def _run_group_task(
         "target_weights": target_weights,
         **result,
     }
-    return factor_name, weeks, group_id, group_result, metrics
+    return factor_name, interval, group_id, group_result, metrics
 
 
 def _attach_gross_curves(
@@ -220,33 +222,37 @@ def _assemble_results(
     group_results: list[
         tuple[str, int, str, dict[str, Any], dict[str, Any]]
     ],
+    rebalance_frequency: str,
 ) -> dict[str, dict[str, Any]]:
     """按因子和周期组装稳定的嵌套返回结构。"""
     results = {
         factor_name: {
             "definitions": definitions.copy(),
+            "rebalance_frequency": rebalance_frequency,
             "metrics": [],
             "periods": {},
         }
         for factor_name in factor_names
     }
-    for factor_name, weeks, target_result in target_results:
-        results[factor_name]["periods"][weeks] = {
+    for factor_name, interval, target_result in target_results:
+        results[factor_name]["periods"][interval] = {
             "actions": target_result["actions"],
             "members": target_result["members"],
             "groups": {},
         }
 
     definition_by_group = definitions.set_index("group_id")
-    for factor_name, weeks, group_id, group_result, metrics in group_results:
-        results[factor_name]["periods"][weeks]["groups"][group_id] = group_result
+    for factor_name, interval, group_id, group_result, metrics in group_results:
+        period_groups = results[factor_name]["periods"][interval]["groups"]
+        period_groups[group_id] = group_result
         group_definition = definition_by_group.loc[group_id]
         metric_row = {
             "group_id": group_id,
             "quantile_lower": group_definition["quantile_lower"],
             "quantile_upper": group_definition["quantile_upper"],
             "label": group_definition["label"],
-            "rebalance_weeks": weeks,
+            "rebalance_frequency": rebalance_frequency,
+            "rebalance_interval": interval,
             **metrics,
         }
         results[factor_name]["metrics"].append(metric_row)

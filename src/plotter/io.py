@@ -58,7 +58,10 @@ def _load_backtest(
     """将 v7 周期/分组目录恢复成当前 backtest 嵌套结构。"""
     if not result_directory.exists():
         return None
-    metrics = pd.read_csv(result_directory / "metrics.csv")
+    metrics = pd.read_csv(result_directory / "metrics.csv").rename(
+        columns={"rebalance_weeks": "rebalance_interval"}
+    )
+    metrics["rebalance_frequency"] = "weekly"
     period_directories = sorted(
         (
             path
@@ -100,5 +103,6 @@ def _load_backtest(
     return {
         "definitions": definitions,
         "metrics": metrics,
+        "rebalance_frequency": "weekly",
         "periods": periods,
     }

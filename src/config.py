@@ -137,7 +137,10 @@ def _validate_group_return(settings: Mapping[str, Any]) -> None:
     _date_interval(settings, "group_return")
     _universe(settings["universe_indices"], "group_return")
     _validate_grouping(settings["grouping"], "group_return.grouping")
-    _validate_schedule(settings["sampling"], "group_return.sampling", False)
+    _validate_sampling_schedule(
+        settings["sampling"],
+        "group_return.sampling",
+    )
     _nonnegative_integer(
         settings["factor_lag_days"],
         "group_return.factor_lag_days",
@@ -192,10 +195,9 @@ def _validate_backtest(
     _date_interval(settings, section_name)
     _universe(settings["universe_indices"], section_name)
     _validate_grouping(settings["grouping"], f"{section_name}.grouping")
-    _validate_schedule(
+    _validate_rebalance_schedule(
         settings["rebalance"],
         f"{section_name}.rebalance",
-        True,
     )
     _nonnegative_integer(
         settings["factor_lag_days"],
@@ -295,18 +297,16 @@ def _validate_grouping(
         raise ValueError(f"{location}.weighting.equal 包含无效字段")
 
 
-def _validate_schedule(
+def _validate_sampling_schedule(
     settings: Mapping[str, Any],
     location: str,
-    multiple_intervals: bool,
 ) -> None:
-    """校验评价采样或回测调仓使用的自然周计划。"""
-    interval_key = "intervals_weeks" if multiple_intervals else "every_n_weeks"
+    """校验分组收益评价使用的自然周采样计划。"""
     expected_keys = {
         "weekday",
         "anchor_date",
         "holiday_policy",
-        interval_key,
+        "every_n_weeks",
     }
     _check_keys(settings, expected_keys, expected_keys, location)
     _choice(
@@ -321,10 +321,38 @@ def _validate_schedule(
     )
     if pd.isna(pd.Timestamp(settings["anchor_date"])):
         raise ValueError(f"{location}.anchor_date 不是有效日期")
-    if multiple_intervals:
-        _positive_integer_list(settings[interval_key], f"{location}.{interval_key}")
-    else:
-        _positive_integer(settings[interval_key], f"{location}.{interval_key}")
+    _positive_integer(
+        settings["every_n_weeks"],
+        f"{location}.every_n_weeks",
+    )
+
+
+def _validate_rebalance_schedule(
+    settings: Mapping[str, Any],
+    location: str,
+) -> None:
+    """按日度或周度模式校验回测调仓计划。"""
+    frequency = settings["frequency"]
+    _choice(frequency, {"daily", "weekly"}, f"{location}.frequency")
+    expected_keys = {"frequency", "intervals"}
+    if frequency == "weekly":
+        expected_keys |= {"weekday", "anchor_date", "holiday_policy"}
+    _check_keys(settings, expected_keys, expected_keys, location)
+    _positive_integer_list(settings["intervals"], f"{location}.intervals")
+    if frequency == "daily":
+        return
+    _choice(
+        settings["weekday"],
+        {"MON", "TUE", "WED", "THU", "FRI"},
+        f"{location}.weekday",
+    )
+    _choice(
+        settings["holiday_policy"],
+        {"previous_trading_day", "skip"},
+        f"{location}.holiday_policy",
+    )
+    if pd.isna(pd.Timestamp(settings["anchor_date"])):
+        raise ValueError(f"{location}.anchor_date 不是有效日期")
 
 
 def _validate_execution(

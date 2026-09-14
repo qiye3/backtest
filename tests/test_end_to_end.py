@@ -11,6 +11,7 @@ import matplotlib
 import pandas as pd
 import yaml
 
+from src.backtest.io import load_backtest_results
 from src.cli import run
 from src.config import load_config
 
@@ -34,7 +35,7 @@ FIGURE_FILES = {
 
 
 class EndToEndTests(unittest.TestCase):
-    """验证全阶段、市场缓存和 plotter-only 恢复。"""
+    """验证全阶段、日度调仓、市场缓存和 plotter-only 恢复。"""
 
     def test_full_run_cache_reuse_and_plotter_restore(self) -> None:
         """运行完整链路，并在断开原始数据后复用两类缓存。"""
@@ -85,6 +86,67 @@ class EndToEndTests(unittest.TestCase):
                 },
             )
             self._run_plotter_from_results(config_path, config_data)
+
+    def test_daily_rebalance_and_result_restore(self) -> None:
+        """按每个和每五个交易日回测，并校验年化频率与缓存恢复。"""
+        with TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory)
+            config_path = workspace / "daily_test.yaml"
+            output_root = workspace / "output"
+            config_data = self._test_config(output_root)
+            config_data["market_data"]["cache_root"] = str(
+                workspace / "market_cache"
+            )
+            config_data["run"].update(
+                {
+                    "group_return": False,
+                    "plotter": False,
+                }
+            )
+            for section_name in ["simple_backtest", "account_backtest"]:
+                config_data[section_name]["rebalance"] = {
+                    "frequency": "daily",
+                    "intervals": [1, 5],
+                }
+            config_data["metrics"]["return_frequency"] = "rebalance"
+            self._write_config(config_path, config_data)
+
+            stage_results = run(load_config(config_path))
+            factor_panel = stage_results["factors"]["return_10d"]
+            backtest_results = {
+                mode: stage_results[f"{mode}_backtest"]["return_10d"]
+                for mode in ["simple", "account"]
+            }
+            for backtest_result in backtest_results.values():
+                self.assertEqual(backtest_result["rebalance_frequency"], "daily")
+                self.assertEqual(list(backtest_result["periods"]), [1, 5])
+
+            backtest_result = backtest_results["simple"]
+            daily_actions = backtest_result["periods"][1]["actions"]
+            actual_dates = pd.DatetimeIndex(daily_actions["date"].unique())
+            expected_dates = factor_panel.index[
+                factor_panel.index.to_series().between(
+                    config_data["simple_backtest"]["start"],
+                    config_data["simple_backtest"]["end"],
+                )
+            ]
+            self.assertTrue(actual_dates.equals(expected_dates))
+
+            annualization = (
+                backtest_result["metrics"]
+                .groupby("rebalance_interval")["risk_periods_per_year"]
+                .first()
+                .to_dict()
+            )
+            self.assertEqual(annualization, {1: 252.0, 5: 50.4})
+            for mode in ["simple", "account"]:
+                restored = load_backtest_results(
+                    ["return_10d"],
+                    output_root,
+                    mode,
+                )["return_10d"]
+                self.assertEqual(restored["rebalance_frequency"], "daily")
+                self.assertEqual(list(restored["periods"]), [1, 5])
 
     @staticmethod
     def _test_config(output_root: Path) -> dict:

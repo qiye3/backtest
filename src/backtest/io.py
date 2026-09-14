@@ -26,22 +26,35 @@ def save_backtest_results(
     output_root = Path(output_root)
     output_paths = {}
     for factor_name, result in results.items():
+        rebalance_frequency = result["rebalance_frequency"]
         packed_frames = [
-            _pack_frame(result["definitions"], "definitions"),
-            _pack_frame(result["metrics"], "metrics"),
+            _pack_frame(
+                result["definitions"],
+                "definitions",
+                rebalance_frequency=rebalance_frequency,
+            ),
+            _pack_frame(
+                result["metrics"],
+                "metrics",
+                rebalance_frequency=rebalance_frequency,
+            ),
         ]
-        for weeks, period_result in result["periods"].items():
+        for interval, period_result in result["periods"].items():
+            period_context = {
+                "rebalance_frequency": rebalance_frequency,
+                "rebalance_interval": interval,
+            }
             packed_frames.append(
                 _pack_frame(
                     period_result["actions"],
                     "actions",
-                    rebalance_weeks=weeks,
+                    **period_context,
                 )
             )
             for group_id, group_result in period_result["groups"].items():
                 curve_views = group_result["curves"]
                 context = {
-                    "rebalance_weeks": weeks,
+                    **period_context,
                     "group_id": group_id,
                 }
                 packed_frames.extend(
@@ -95,29 +108,33 @@ def _restore_backtest_result(
     stored_result: pd.DataFrame,
 ) -> dict[str, Any]:
     """把扁平记录恢复为 backtest 引擎的周期和分组结构。"""
+    rebalance_frequency = stored_result[
+        "__rebalance_frequency"
+    ].dropna().iloc[0]
     result = {
         "definitions": _unpack_frame(stored_result, "definitions"),
         "metrics": _unpack_frame(stored_result, "metrics"),
+        "rebalance_frequency": rebalance_frequency,
         "periods": {},
     }
-    period_values = stored_result["__rebalance_weeks"].dropna().unique()
-    for weeks_value in sorted(period_values):
-        weeks = int(weeks_value)
+    period_values = stored_result["__rebalance_interval"].dropna().unique()
+    for interval_value in sorted(period_values):
+        interval = int(interval_value)
         actions = _unpack_frame(
             stored_result,
             "actions",
-            rebalance_weeks=weeks,
+            rebalance_interval=interval,
         )
         group_rows = stored_result.loc[
             (stored_result["__record_type"] == "curves")
-            & (stored_result["__rebalance_weeks"] == weeks)
+            & (stored_result["__rebalance_interval"] == interval)
         ]
         groups = {}
         for group_id in group_rows["__group_id"].dropna().unique():
             all_curve = _unpack_frame(
                 stored_result,
                 "curves",
-                rebalance_weeks=weeks,
+                rebalance_interval=interval,
                 group_id=group_id,
             )
             daily_available = bool(
@@ -134,17 +151,17 @@ def _restore_backtest_result(
                 "trades": _unpack_frame(
                     stored_result,
                     "trades",
-                    rebalance_weeks=weeks,
+                    rebalance_interval=interval,
                     group_id=group_id,
                 ),
                 "turnover": _unpack_frame(
                     stored_result,
                     "turnover",
-                    rebalance_weeks=weeks,
+                    rebalance_interval=interval,
                     group_id=group_id,
                 ),
             }
-        result["periods"][weeks] = {
+        result["periods"][interval] = {
             "actions": actions,
             "groups": groups,
         }
@@ -154,7 +171,8 @@ def _restore_backtest_result(
 def _pack_frame(
     frame: pd.DataFrame,
     record_type: str,
-    rebalance_weeks: int | None = None,
+    rebalance_frequency: str,
+    rebalance_interval: int | None = None,
     group_id: str | None = None,
     daily_available: bool | None = None,
 ) -> pd.DataFrame:
@@ -172,7 +190,8 @@ def _pack_frame(
     records["__schema"] = False
     records["__columns"] = None
     packed_frame = pd.concat([schema_record, records], ignore_index=True)
-    packed_frame["__rebalance_weeks"] = rebalance_weeks
+    packed_frame["__rebalance_frequency"] = rebalance_frequency
+    packed_frame["__rebalance_interval"] = rebalance_interval
     packed_frame["__group_id"] = group_id
     packed_frame["__daily_available"] = daily_available
     return packed_frame
@@ -181,16 +200,16 @@ def _pack_frame(
 def _unpack_frame(
     stored_result: pd.DataFrame,
     record_type: str,
-    rebalance_weeks: int | None = None,
+    rebalance_interval: int | None = None,
     group_id: str | None = None,
 ) -> pd.DataFrame:
     """按记录类型、周期和分组恢复一张回测结果表。"""
     selected = stored_result.loc[
         stored_result["__record_type"] == record_type
     ]
-    if rebalance_weeks is not None:
+    if rebalance_interval is not None:
         selected = selected.loc[
-            selected["__rebalance_weeks"] == rebalance_weeks
+            selected["__rebalance_interval"] == rebalance_interval
         ]
     if group_id is not None:
         selected = selected.loc[selected["__group_id"] == group_id]

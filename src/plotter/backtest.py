@@ -58,6 +58,7 @@ def plot_backtest(
 ) -> list[Path]:
     """按调仓周期绘制回测曲线，并为 simple 模式附加指标表。"""
     periods = sorted(backtest_result["periods"])
+    rebalance_frequency = backtest_result["rebalance_frequency"]
     plot_settings = settings[mode]
     figure, plot_axes, table_axis = _create_backtest_axes(
         period_count=len(periods),
@@ -77,12 +78,13 @@ def plot_backtest(
     )
 
     legend_handles = []
-    for axis, weeks in zip(plot_axes, periods):
+    for axis, interval in zip(plot_axes, periods):
         handles = _draw_period_curves(
             axis=axis,
-            period_result=backtest_result["periods"][weeks],
+            period_result=backtest_result["periods"][interval],
             definitions=backtest_result["definitions"],
-            weeks=weeks,
+            rebalance_frequency=rebalance_frequency,
+            rebalance_interval=interval,
             mode=mode,
             curve_frequency=settings["curve_frequency"],
             plot_settings=plot_settings,
@@ -113,6 +115,7 @@ def plot_backtest(
             table_axis=table_axis,
             metrics=backtest_result["metrics"],
             periods=periods,
+            rebalance_frequency=rebalance_frequency,
             plot_settings=plot_settings,
         )
     return save_figure(figure, output_stem, settings)
@@ -168,7 +171,8 @@ def _draw_period_curves(
     axis: plt.Axes,
     period_result: Mapping[str, Any],
     definitions: pd.DataFrame,
-    weeks: int,
+    rebalance_frequency: str,
+    rebalance_interval: int,
     mode: str,
     curve_frequency: str,
     plot_settings: Mapping[str, Any],
@@ -190,7 +194,8 @@ def _draw_period_curves(
         curves = period_result["groups"][definition.group_id]["curves"]
         if curve_frequency not in curves:
             raise ValueError(
-                f"W{weeks}/{definition.group_id} 不包含 "
+                f"{_rebalance_label(rebalance_frequency, rebalance_interval)}/"
+                f"{definition.group_id} 不包含 "
                 f"{curve_frequency} 曲线"
             )
         curve = curves[curve_frequency]
@@ -232,7 +237,8 @@ def _draw_period_curves(
         else "NAV (initial = 1)"
     )
     axis.set_title(
-        f"Every {weeks} week(s) | {curve_frequency} observations | after costs",
+        f"{_rebalance_label(rebalance_frequency, rebalance_interval)} | "
+        f"{curve_frequency} observations | after costs",
         fontsize=10,
     )
     return handles
@@ -242,6 +248,7 @@ def _draw_summary_table(
     table_axis: plt.Axes,
     metrics: pd.DataFrame,
     periods: Sequence[int],
+    rebalance_frequency: str,
     plot_settings: Mapping[str, Any],
 ) -> None:
     """绘制 simple 回测指定分位组的跨周期指标摘要。"""
@@ -255,7 +262,12 @@ def _draw_summary_table(
     )
     metric_names = plot_settings["metric_columns"]
     table = table_axis.table(
-        cellText=_summary_rows(metrics, periods, plot_settings),
+        cellText=_summary_rows(
+            metrics,
+            periods,
+            rebalance_frequency,
+            plot_settings,
+        ),
         colLabels=[
             "Rebalance",
             *[_METRIC_LABELS[name] for name in metric_names],
@@ -277,6 +289,7 @@ def _draw_summary_table(
 def _summary_rows(
     metrics: pd.DataFrame,
     periods: Sequence[int],
+    rebalance_frequency: str,
     plot_settings: Mapping[str, Any],
 ) -> list[list[str]]:
     """提取摘要分位组并格式化为表格行。"""
@@ -285,16 +298,17 @@ def _summary_rows(
         plot_settings["summary_quantile"],
     )
     rows = []
-    for weeks in periods:
+    for interval in periods:
         selected = metrics[
-            (metrics["rebalance_weeks"] == weeks)
+            (metrics["rebalance_frequency"] == rebalance_frequency)
+            & (metrics["rebalance_interval"] == interval)
             & np.isclose(metrics["quantile_lower"], quantile_lower)
             & np.isclose(metrics["quantile_upper"], quantile_upper)
         ]
         metric_values = selected.iloc[0] if len(selected) == 1 else None
         rows.append(
             [
-                f"{weeks} week(s)",
+                _rebalance_label(rebalance_frequency, interval),
                 *[
                     _format_metric(name, metric_values[name])
                     if metric_values is not None
@@ -304,6 +318,15 @@ def _summary_rows(
             ]
         )
     return rows
+
+
+def _rebalance_label(frequency: str, interval: int) -> str:
+    """把日度或周度调仓间隔转换为图标题和表格使用的英文标签。"""
+    if frequency == "daily":
+        unit = "trading day" if interval == 1 else "trading days"
+    else:
+        unit = "week" if interval == 1 else "weeks"
+    return f"Every {interval} {unit}"
 
 
 def _format_metric(name: str, value: Any) -> str:
