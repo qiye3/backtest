@@ -195,23 +195,14 @@ simple_backtest:
       field: null
       # equal 时必须为 0；field 时表示权重数据的滞后交易日数。
       lag_days: 0
-  # 调仓频率和间隔；默认周度，也可切换为按交易日调仓。
+  # 调仓频率和间隔；当前按每个交易日调仓。
   rebalance:
     # 可选 weekly、daily；intervals 的单位随之为自然周或交易日。
-    frequency: weekly
+    frequency: daily
     # 可同时运行多个间隔；每项必须为正整数且不可重复。
     intervals:
-      # 每周调仓策略。
+      # 每个交易日调仓一次。
       - 1
-      # 每两周调仓策略。
-      - 2
-    # 以下三项仅用于 weekly；切换 daily 时必须删除 weekday、anchor_date、holiday_policy。
-    # 目标调仓星期；可选 MON、TUE、WED、THU、FRI。
-    weekday: FRI
-    # 确定隔周序列的锚点日期；格式为 YYYY-MM-DD。
-    anchor_date: "2024-01-05"
-    # 目标日休市时可选 previous_trading_day 或 skip。
-    holiday_policy: previous_trading_day
   # 调仓选股使用的因子滞后交易日数；0 表示使用调仓日因子。
   factor_lag_days: 0
   # 成交价格可选 open、close；open 需要个股 S_DQ_ADJOPEN 和指数 S_DQ_OPEN。
@@ -293,23 +284,14 @@ account_backtest:
       field: null
       # equal 时必须为 0；field 时表示权重数据的滞后交易日数。
       lag_days: 0
-  # 调仓频率和间隔；默认周度，也可切换为按交易日调仓。
+  # 调仓频率和间隔；当前按每个交易日调仓。
   rebalance:
     # 可选 weekly、daily；intervals 的单位随之为自然周或交易日。
-    frequency: weekly
+    frequency: daily
     # 可同时运行多个间隔；每项必须为正整数且不可重复。
     intervals:
-      # 每周调仓策略。
+      # 每个交易日调仓一次。
       - 1
-      # 每两周调仓策略。
-      - 2
-    # 以下三项仅用于 weekly；切换 daily 时必须删除 weekday、anchor_date、holiday_policy。
-    # 目标调仓星期；可选 MON、TUE、WED、THU、FRI。
-    weekday: FRI
-    # 确定隔周序列的锚点日期；格式为 YYYY-MM-DD。
-    anchor_date: "2024-01-05"
-    # 目标日休市时可选 previous_trading_day 或 skip。
-    holiday_policy: previous_trading_day
   # 调仓选股使用的因子滞后交易日数；0 表示使用调仓日因子。
   factor_lag_days: 0
   # 成交价格可选 open、close；open 需要个股 S_DQ_ADJOPEN 和指数 S_DQ_OPEN。
