@@ -92,7 +92,6 @@ def plot_backtest(
         if mode == "account":
             axis.legend(
                 loc="upper left",
-                bbox_to_anchor=(0, -0.17),
                 ncol=min(settings["legend_columns"], len(handles)),
                 frameon=False,
                 fontsize=8,
@@ -104,8 +103,8 @@ def plot_backtest(
         figure.legend(
             legend_handles,
             [handle.get_label() for handle in legend_handles],
-            loc="upper center",
-            bbox_to_anchor=(0.5, 0.945),
+            loc="upper left",
+            bbox_to_anchor=(0.055, 0.945),
             ncol=min(11, len(legend_handles)),
             frameon=False,
             fontsize=8,
@@ -207,11 +206,7 @@ def _draw_period_curves(
             curve[curve_key],
             color=palette[group_position],
             linewidth=line_width,
-            linestyle=(
-                "-"
-                if mode == "simple"
-                else ["-", "--", "-.", ":"][group_position % 4]
-            ),
+            linestyle="-",
             label=labels[group_position],
         )
         handles.append(line)
@@ -223,7 +218,7 @@ def _draw_period_curves(
         benchmark_curve[benchmark_key],
         color=plot_settings["benchmark_color"],
         linewidth=1.9,
-        linestyle="--" if mode == "simple" else "-",
+        linestyle="--",
         label="Benchmark",
         zorder=5,
     )

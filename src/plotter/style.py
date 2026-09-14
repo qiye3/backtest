@@ -14,7 +14,9 @@ from matplotlib.colors import LinearSegmentedColormap
 
 
 def group_colors(color_spec: Sequence[str], color_count: int) -> list[Any]:
-    """将配置颜色插值成与分组数量一致的颜色序列。"""
+    """颜色数量匹配时保留原色，否则插值成与分组数量一致的序列。"""
+    if len(color_spec) == color_count:
+        return list(color_spec)
     color_map = LinearSegmentedColormap.from_list("factor_groups", color_spec)
     return [
         color_map(position)
