@@ -27,6 +27,8 @@ factors:
 output:
   # 输出根目录；每个因子会写入一个以因子名命名的子目录。
   root: ../outputs
+  # 是否保存回测曲线、动作、逐股成交和换手明细；false 时仅保存分组定义与汇总指标。
+  save_backtest_details: false
 
 # 日频市场面板的原始数据范围、缓存位置和来源；任一计算阶段启用时必填。
 market_data:

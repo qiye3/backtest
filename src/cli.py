@@ -171,6 +171,7 @@ def _run_backtest(
         results,
         config.output_root,
         mode,
+        save_details=config.raw["output"]["save_backtest_details"],
     )
     return results
 

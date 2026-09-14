@@ -66,7 +66,16 @@ def load_config(config_path: str | Path) -> RunConfig:
     raw_config = yaml.safe_load(resolved_path.read_text(encoding="utf-8"))
     _check_keys(raw_config, {"run", "output"}, ROOT_KEYS, "root")
     _validate_run(raw_config["run"])
-    _check_keys(raw_config["output"], {"root"}, {"root"}, "output")
+    _check_keys(
+        raw_config["output"],
+        {"root", "save_backtest_details"},
+        {"root", "save_backtest_details"},
+        "output",
+    )
+    _boolean(
+        raw_config["output"]["save_backtest_details"],
+        "output.save_backtest_details",
+    )
 
     run_settings = raw_config["run"]
     calculation_stages = STAGE_NAMES[:-1]

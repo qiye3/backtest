@@ -21,8 +21,9 @@ def save_backtest_results(
     results: Mapping[str, Mapping[str, Any]],
     output_root: str | Path,
     mode: str,
+    save_details: bool = False,
 ) -> dict[str, Path]:
-    """覆盖保存一批回测结果，保留指标、曲线、成交和换手。"""
+    """覆盖保存汇总指标，并按配置选择是否保留回测明细。"""
     output_root = Path(output_root)
     output_paths = {}
     for factor_name, result in results.items():
@@ -39,44 +40,10 @@ def save_backtest_results(
                 rebalance_frequency=rebalance_frequency,
             ),
         ]
-        for interval, period_result in result["periods"].items():
-            period_context = {
-                "rebalance_frequency": rebalance_frequency,
-                "rebalance_interval": interval,
-            }
-            packed_frames.append(
-                _pack_frame(
-                    period_result["actions"],
-                    "actions",
-                    **period_context,
-                )
+        if save_details:
+            packed_frames.extend(
+                _pack_backtest_details(result, rebalance_frequency)
             )
-            for group_id, group_result in period_result["groups"].items():
-                curve_views = group_result["curves"]
-                context = {
-                    **period_context,
-                    "group_id": group_id,
-                }
-                packed_frames.extend(
-                    [
-                        _pack_frame(
-                            curve_views["all"],
-                            "curves",
-                            daily_available="daily" in curve_views,
-                            **context,
-                        ),
-                        _pack_frame(
-                            group_result["trades"],
-                            "trades",
-                            **context,
-                        ),
-                        _pack_frame(
-                            group_result["turnover"],
-                            "turnover",
-                            **context,
-                        ),
-                    ]
-                )
 
         stored_result = pd.concat(packed_frames, ignore_index=True)
         factor_directory = output_root / factor_name
@@ -85,6 +52,53 @@ def save_backtest_results(
         stored_result.to_parquet(output_path, index=False)
         output_paths[factor_name] = output_path
     return output_paths
+
+
+def _pack_backtest_details(
+    result: Mapping[str, Any],
+    rebalance_frequency: str,
+) -> list[pd.DataFrame]:
+    """打包各调仓周期的动作、曲线、逐股成交和换手明细。"""
+    packed_frames = []
+    for interval, period_result in result["periods"].items():
+        period_context = {
+            "rebalance_frequency": rebalance_frequency,
+            "rebalance_interval": interval,
+        }
+        packed_frames.append(
+            _pack_frame(
+                period_result["actions"],
+                "actions",
+                **period_context,
+            )
+        )
+        for group_id, group_result in period_result["groups"].items():
+            curve_views = group_result["curves"]
+            context = {
+                **period_context,
+                "group_id": group_id,
+            }
+            packed_frames.extend(
+                [
+                    _pack_frame(
+                        curve_views["all"],
+                        "curves",
+                        daily_available="daily" in curve_views,
+                        **context,
+                    ),
+                    _pack_frame(
+                        group_result["trades"],
+                        "trades",
+                        **context,
+                    ),
+                    _pack_frame(
+                        group_result["turnover"],
+                        "turnover",
+                        **context,
+                    ),
+                ]
+            )
+    return packed_frames
 
 
 def load_backtest_results(

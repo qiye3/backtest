@@ -186,6 +186,7 @@ def run_frequency(
                 factor_results,
                 frequency_output_root,
                 mode,
+                save_details=config.raw["output"]["save_backtest_details"],
             )
             plot_backtest(
                 factor_name=factor_name,

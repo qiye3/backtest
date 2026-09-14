@@ -11,7 +11,7 @@ import matplotlib
 import pandas as pd
 import yaml
 
-from src.backtest.io import load_backtest_results
+from src.backtest.io import load_backtest_results, save_backtest_results
 from src.cli import run
 from src.config import load_config
 
@@ -47,6 +47,7 @@ class EndToEndTests(unittest.TestCase):
             config_data["market_data"]["cache_root"] = str(
                 workspace / "market_cache"
             )
+            config_data["output"]["save_backtest_details"] = True
             self._write_config(config_path, config_data)
             full_results = run(load_config(config_path))
             self.assertEqual(
@@ -97,6 +98,7 @@ class EndToEndTests(unittest.TestCase):
             config_data["market_data"]["cache_root"] = str(
                 workspace / "market_cache"
             )
+            config_data["output"]["save_backtest_details"] = True
             config_data["run"].update(
                 {
                     "group_return": False,
@@ -147,6 +149,27 @@ class EndToEndTests(unittest.TestCase):
                 )["return_10d"]
                 self.assertEqual(restored["rebalance_frequency"], "daily")
                 self.assertEqual(list(restored["periods"]), [1, 5])
+
+            summary_root = workspace / "summary_only"
+            save_backtest_results(
+                {"return_10d": backtest_results["simple"]},
+                summary_root,
+                "simple",
+            )
+            stored_summary = pd.read_parquet(
+                summary_root / "return_10d" / "simple_backtest.parquet"
+            )
+            self.assertEqual(
+                set(stored_summary["__record_type"]),
+                {"definitions", "metrics"},
+            )
+            restored_summary = load_backtest_results(
+                ["return_10d"],
+                summary_root,
+                "simple",
+            )["return_10d"]
+            self.assertEqual(restored_summary["periods"], {})
+            self.assertEqual(len(restored_summary["metrics"]), 20)
 
     @staticmethod
     def _test_config(output_root: Path) -> dict:
