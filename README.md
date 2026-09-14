@@ -20,7 +20,7 @@ python -m pip install .
 python -m src.cli --config configs/base_config.yaml
 ```
 
-输出位于 `outputs/<factor_name>/`。每个因子固定保存四个可复用数据文件：
+输出位于 `outputs/<factor_name>/`。每个因子固定保存四个结果文件：
 
 ```text
 factor.parquet
@@ -29,8 +29,19 @@ simple_backtest.parquet
 account_backtest.parquet
 ```
 
-图像保存在同一因子目录的 `figures/`。重复运行会覆盖同名结果，不产生带时间戳的
-新缓存。
+图像保存在同一因子目录的 `figures/`。回测结果默认只保存分组定义和汇总指标，
+不保存回测曲线、调仓动作、逐股成交和换手明细，从而避免明细文件占用大量空间。
+重复运行会覆盖同名结果，不产生带时间戳的新缓存。
+
+如需在后续运行中恢复完整回测结果，将主配置中的开关设为：
+
+```yaml
+output:
+  save_backtest_details: true
+```
+
+设为 `false` 时仍会正常生成本次运行的汇总 CSV 和图像，因为绘图直接使用内存中的
+完整回测结果。
 
 ## 使用真实数据
 
@@ -41,10 +52,12 @@ account_backtest.parquet
 - 按研究区间修改各阶段日期；
 - 将 `factors.config_directory` 指向需要批量运行的 Factor YAML 目录；
 - 用 `run` 下的五个布尔值选择阶段；
+- 用 `output.save_backtest_details` 选择是否将完整回测明细写入 Parquet，默认关闭；
 - 原始数据或字段配置改变后，将 `run.refresh_market_data` 设为 `true` 刷新缓存。
 
 市场面板缓存保存在 `data/<主配置文件名>/`。关闭 Factor 阶段时，下游会从输出目录
-恢复 `factor.parquet`；plotter-only 会恢复另外三类结果文件，不需要重新加载市场数据。
+恢复 `factor.parquet`。只有启用 `output.save_backtest_details` 后，plotter-only 才能从
+回测 Parquet 恢复曲线并重新绘图；默认的汇总结果仍可用于读取和比较回测指标。
 
 ## Factor YAML
 
