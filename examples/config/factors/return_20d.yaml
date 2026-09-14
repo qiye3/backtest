@@ -1,6 +1,12 @@
+# 因子唯一名称；同时作为输出子目录名，批量配置目录内不得重复。
 name: return_20d
+# 动态导入实现；module 与 class 共同确定本 YAML 构造的 Factor 类。
 implementation:
+  # 定义因子类的完整 Python 模块名，不填写 .py 文件后缀。
   module: src.factors.ExampleFactor
+  # 模块中继承 src.factors.base.Factor 的具体类名。
   class: ExampleFactor
+# 直接传给具体 Factor 类的业务参数；参数名称和可选值由该类定义。
 params:
+  # 收益回看交易日数；应为正整数，20 通常近似一个自然月的交易日数。
   lookback_days: 20

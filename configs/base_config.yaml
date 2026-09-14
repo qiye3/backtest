@@ -1,216 +1,428 @@
-# 所有阶段只由这里的布尔开关控制；CLI 不覆盖阶段选择。
+# 主配置串联数据、因子、评价、回测和绘图；运行命令为：
+# python -m src.cli --config configs/base_config.yaml
+
+# 控制本次运行哪些阶段；所有字段均必填，CLI 不提供阶段覆盖参数。
 run:
+  # 是否计算 Factor YAML 目录中的全部因子，并覆盖保存 factor.parquet。
   factors: true
+  # 是否计算分组收益、IC 和 RankIC，并覆盖保存 group_return.parquet。
   group_return: true
+  # 是否运行归一化净值回测，并覆盖保存 simple_backtest.parquet。
   simple_backtest: true
+  # 是否运行带现金账户和成交约束的回测，并覆盖保存 account_backtest.parquet。
   account_backtest: true
+  # 是否根据已有或本次生成的结果绘图；可选值为 true、false。
   plotter: true
+  # 因子间并行计算的线程数；必须为正整数，1 表示串行执行。
   max_workers: 4
+  # true 从原始 CSV 重建并覆盖同名市场缓存；false 优先复用已有 Parquet。
   refresh_market_data: false
 
+# Factor 阶段设置；仅在 run.factors=true 时必填。
 factors:
+  # Factor YAML 所在目录；相对路径以本主配置文件所在目录为基准。
   config_directory: ../examples/config/base_factors
 
+# 全部因子的计算结果和图像输出位置；该分区始终必填。
 output:
+  # 输出根目录；每个因子会写入一个以因子名命名的子目录。
   root: ../outputs
 
+# 日频市场面板的原始数据范围、缓存位置和来源；任一计算阶段启用时必填。
 market_data:
-  # 仓库内置 synthetic 数据；生产运行时替换成真实原始数据根。
+  # 原始数据根目录；示例使用仓库内置 synthetic 数据，生产运行时替换为真实数据根。
   source_root: ../examples/data
+  # Parquet 缓存根目录；实际缓存写入其下以主配置文件名命名的 base_config 子目录。
   cache_root: ../data
+  # 市场面板首日，格式为 YYYY-MM-DD；需要覆盖最长因子的历史预热期。
   start_date: "2024-01-02"
+  # 市场面板末日，格式为 YYYY-MM-DD，且不得早于 start_date。
   end_date: "2024-06-28"
+  # 定义交易日历和回测基准的 Wind 指数代码；必须包含在 index_price.codes 中。
   benchmark_index: 000906.SH
+  # 研究股票池指数；当前实现固定要求同时包含中证800和中证1000。
   universe_indices:
+    # 中证800指数 Wind 代码。
     - 000906.SH
+    # 中证1000指数 Wind 代码。
     - 000852.SH
+  # 要构建缓存的数据来源；来源名必须是 src.data.load_data.DATA_SOURCE_SPECS 支持的名称。
   sources:
+    # 指数价格为必需来源，用于生成交易日历和基准曲线。
     index_price:
+      # 要读取的指数代码；至少包含 market_data.benchmark_index，可同时添加其他指数。
       codes:
+        # 当前示例只读取中证800指数行情。
         - 000906.SH
+      # 原始指数行情字段；S_DQ_CLOSE 为当前实现要求的必需字段。
       fields:
+        # 指数未复权收盘价。
         - S_DQ_CLOSE
+    # 个股日行情为必需来源，供示例因子、收益评价和回测取价。
     stock_quote:
+      # 要读取的个股行情字段；使用 open 取价时还需增加 S_DQ_ADJOPEN。
       fields:
+        # 个股复权收盘价；当前实现要求必须配置该字段。
         - S_DQ_ADJCLOSE
 
+# 因子横截面分组收益、IC 和 RankIC 的评价口径；run.group_return=true 时必填。
 group_return:
+  # 评价起始日，必须位于市场面板范围内。
   start: "2024-02-02"
+  # 评价结束日，必须不早于 start，并为未来收益窗口预留后续市场数据。
   end: "2024-06-07"
+  # 评价使用的历史股票池；可选配置中的一个或多个 universe_indices。
   universe_indices:
+    # 纳入中证800历史成份股。
     - 000906.SH
+    # 纳入中证1000历史成份股；两者按股票代码取并集。
     - 000852.SH
+  # 每个采样日如何按因子值分组并计算组内收益。
   grouping:
+    # 分位区间列表；每项为 [下界, 上界]，区间可独立、重叠或只覆盖部分分位范围。
     quantile_edges:
+      # 因子值最低的 20%，记为第 1 组。
       - [0.0, 0.2]
+      # 因子值处于 20% 至 40% 的第 2 组。
       - [0.2, 0.4]
+      # 因子值处于 40% 至 60% 的第 3 组。
       - [0.4, 0.6]
+      # 因子值处于 60% 至 80% 的第 4 组。
       - [0.6, 0.8]
+      # 因子值最高的 20%，记为第 5 组。
       - [0.8, 1.0]
+    # 当日进入分组所需的最少有效股票数；必须为正整数。
     min_stocks: 20
+    # 因子缺失处理；exclude 排除缺失股票，error 遇到缺失直接报错。
     missing_factor_policy: exclude
+    # 组内股票权重设置。
     weighting:
+      # 可选 equal 等权或 field 按市场字段加权。
       method: equal
+      # method=equal 时必须为 null；method=field 时填写来源中的字段名。
       field: null
+      # 权重字段滞后交易日数；equal 时必须为 0，field 时可用任意非负整数。
       lag_days: 0
+      # method=field 时还必须增加 source，例如：source: stock_valuation。
+  # 从自然周计划中选取评价采样日。
   sampling:
+    # 目标星期；可选 MON、TUE、WED、THU、FRI。
     weekday: FRI
+    # 每隔多少自然周采样一次；必须为正整数。
     every_n_weeks: 1
+    # 周期锚点日期，用于固定隔周序列；格式为 YYYY-MM-DD。
     anchor_date: "2024-01-05"
+    # 目标日休市时的处理；previous_trading_day 回退至前一交易日，skip 跳过该周。
     holiday_policy: previous_trading_day
+  # 分组使用相对采样日滞后多少个交易日的因子值；0 表示使用采样日因子。
   factor_lag_days: 0
+  # 未来收益起止参考价；可选 open、close。
   reference_price: close
+  # 要同时评价的未来交易日跨度；必须是非空、无重复的正整数列表。
   future_return_days:
+    # 计算未来 5 个交易日收益。
     - 5
+    # 计算未来 20 个交易日收益。
     - 20
+  # 同一采样日内的组收益聚合；可选 mean、median。
   group_return_agg: mean
+  # 多个采样日的组收益汇总；可选 mean、median。
   time_return_agg: mean
+  # 某分组为空时的处理；nan 记录缺失，error 立即报错。
   empty_group_policy: nan
+  # 有效股票数少于 min_stocks 时的处理；nan 记录缺失，error 立即报错。
   insufficient_stocks_policy: nan
+  # 参考价缺失时的处理；previous_close 使用此前收盘，error 立即报错。
   missing_price_policy: previous_close
+  # previous_close 最多允许回看多少个交易日；null 表示不限制，或填写非负整数。
   max_stale_days: null
 
+# 不维护现金余额的归一化组合回测；run.simple_backtest=true 时必填。
 simple_backtest:
+  # 回测起始日，必须位于市场面板范围内。
   start: "2024-02-02"
+  # 回测结束日，必须不早于 start。
   end: "2024-06-21"
+  # 回测使用的历史股票池；多个指数按股票代码取并集。
   universe_indices:
+    # 纳入中证800历史成份股。
     - 000906.SH
+    # 纳入中证1000历史成份股。
     - 000852.SH
+  # 每个调仓日如何选择组合并确定组内权重。
   grouping:
+    # 每项为合法分位区间；区间可重叠或只覆盖部分范围，并各自形成一条回测曲线。
     quantile_edges:
+      # 因子值最低的 20%。
       - [0.0, 0.2]
+      # 因子值处于 20% 至 40%。
       - [0.2, 0.4]
+      # 因子值处于 40% 至 60%。
       - [0.4, 0.6]
+      # 因子值处于 60% 至 80%。
       - [0.6, 0.8]
+      # 因子值最高的 20%。
       - [0.8, 1.0]
+    # 调仓日形成组合所需的最少有效股票数；必须为正整数。
     min_stocks: 20
+    # 因子缺失处理；可选 exclude、error。
     missing_factor_policy: exclude
+    # 组内股票权重设置。
     weighting:
+      # 可选 equal、field；field 方式还需增加 source 字段。
       method: equal
+      # equal 时必须为 null；field 时填写市场数据字段名。
       field: null
+      # equal 时必须为 0；field 时表示权重数据的滞后交易日数。
       lag_days: 0
+  # 可同时运行多个自然周调仓间隔。
   rebalance:
+    # 目标调仓星期；可选 MON、TUE、WED、THU、FRI。
     weekday: FRI
+    # 调仓间隔周数列表；每项必须为正整数且不可重复。
     intervals_weeks:
+      # 每周调仓策略。
       - 1
+      # 每两周调仓策略。
       - 2
+    # 确定隔周序列的锚点日期；格式为 YYYY-MM-DD。
     anchor_date: "2024-01-05"
+    # 目标日休市时可选 previous_trading_day 或 skip。
     holiday_policy: previous_trading_day
+  # 调仓选股使用的因子滞后交易日数；0 表示使用调仓日因子。
   factor_lag_days: 0
+  # 成交价格可选 open、close；open 需要个股 S_DQ_ADJOPEN 和指数 S_DQ_OPEN。
   trade_price: close
+  # 基准净值来源设置。
   benchmark:
+    # 可选 index_price、index_total_return；所选来源必须已在 market_data.sources 中缓存。
     source: index_price
+  # 初次建仓时点；first_rebalance 等待首个计划调仓日，start 在回测首日建仓。
   initial_entry: first_rebalance
+  # simple 回测固定要求初始归一化净值为 1。
   initial_capital: 1.0
+  # 单边交易费率，取值范围 [0, 1)，例如 0.001 表示千分之一。
   transaction_cost_rate: 0.0
+  # 是否对初次建仓产生的换手收取交易费用；可选 true、false。
   charge_initial_cost: true
+  # 是否在回测末日清仓并计入清仓换手和费用；可选 true、false。
   liquidate_at_end: false
+  # 分组为空时可选 cash、hold、error，分别表示转现金、保持原仓或报错。
   empty_group_policy: cash
+  # 股票不足 min_stocks 时可选 cash、hold、error。
   insufficient_stocks_policy: error
+  # 成交价缺失时可选 error、previous_close。
   missing_price_policy: error
+  # previous_close 最多回看的交易日数；null 不限制，或填写非负整数。
   max_stale_days: null
+  # 结果中保存的曲线频率；可选 daily、rebalance、both。
   curve_frequency: both
+  # simple 回测的成交模型设置。
   execution:
+    # simple 当前只支持 ideal，即忽略停牌和涨跌停约束。
     policy: ideal
 
+# 维护现金、持股数量和实际成交状态的账户回测；run.account_backtest=true 时必填。
 account_backtest:
+  # 回测起始日，必须位于市场面板范围内。
   start: "2024-02-02"
+  # 回测结束日，必须不早于 start。
   end: "2024-06-21"
+  # 回测使用的历史股票池；多个指数按股票代码取并集。
   universe_indices:
+    # 纳入中证800历史成份股。
     - 000906.SH
+    # 纳入中证1000历史成份股。
     - 000852.SH
+  # 每个调仓日如何选择组合并确定目标持仓权重。
   grouping:
+    # 每项为合法分位区间；区间可重叠或只覆盖部分范围，并各自形成一条账户曲线。
     quantile_edges:
+      # 因子值最低的 20%。
       - [0.0, 0.2]
+      # 因子值处于 20% 至 40%。
       - [0.2, 0.4]
+      # 因子值处于 40% 至 60%。
       - [0.4, 0.6]
+      # 因子值处于 60% 至 80%。
       - [0.6, 0.8]
+      # 因子值最高的 20%。
       - [0.8, 1.0]
+    # 调仓日形成组合所需的最少有效股票数；必须为正整数。
     min_stocks: 20
+    # 因子缺失处理；可选 exclude、error。
     missing_factor_policy: exclude
+    # 组内股票权重设置。
     weighting:
+      # 可选 equal、field；field 方式还需增加 source 字段。
       method: equal
+      # equal 时必须为 null；field 时填写市场数据字段名。
       field: null
+      # equal 时必须为 0；field 时表示权重数据的滞后交易日数。
       lag_days: 0
+  # 可同时运行多个自然周调仓间隔。
   rebalance:
+    # 目标调仓星期；可选 MON、TUE、WED、THU、FRI。
     weekday: FRI
+    # 调仓间隔周数列表；每项必须为正整数且不可重复。
     intervals_weeks:
+      # 每周调仓策略。
       - 1
+      # 每两周调仓策略。
       - 2
+    # 确定隔周序列的锚点日期；格式为 YYYY-MM-DD。
     anchor_date: "2024-01-05"
+    # 目标日休市时可选 previous_trading_day 或 skip。
     holiday_policy: previous_trading_day
+  # 调仓选股使用的因子滞后交易日数；0 表示使用调仓日因子。
   factor_lag_days: 0
+  # 成交价格可选 open、close；open 需要个股 S_DQ_ADJOPEN 和指数 S_DQ_OPEN。
   trade_price: close
+  # 基准净值来源设置。
   benchmark:
+    # 可选 index_price、index_total_return；所选来源必须已在 market_data.sources 中缓存。
     source: index_price
+  # 初次建仓时点；first_rebalance 等待首个计划调仓日，start 在回测首日建仓。
   initial_entry: first_rebalance
+  # 账户初始资金；必须为正数，币种与输入价格和费用口径一致。
   initial_capital: 1000000
+  # 单边交易费率，取值范围 [0, 1)，例如 0.001 表示千分之一。
   transaction_cost_rate: 0.0
+  # 是否对初次建仓产生的换手收取交易费用；可选 true、false。
   charge_initial_cost: true
+  # 是否在回测末日清仓并计入清仓换手和费用；可选 true、false。
   liquidate_at_end: false
+  # 分组为空时可选 cash、hold、error，分别表示转现金、保持原仓或报错。
   empty_group_policy: cash
+  # 股票不足 min_stocks 时可选 cash、hold、error。
   insufficient_stocks_policy: error
+  # 成交价缺失时可选 error、previous_close。
   missing_price_policy: error
+  # previous_close 最多回看的交易日数；null 不限制，或填写非负整数。
   max_stale_days: null
+  # 结果中保存的曲线频率；可选 daily、rebalance、both。
   curve_frequency: both
+  # 账户成交模型设置；ideal 忽略限制，tradability 根据行情状态阻止不可成交订单。
   execution:
+    # 可选 ideal、tradability；tradability 时必须同时配置下方三个布尔开关。
     policy: ideal
+    # policy=tradability 时增加：block_suspended、block_buy_limit_up、block_sell_limit_down。
 
+# 两类回测共用的绩效指标口径；任一回测阶段启用时必填。
 metrics:
+  # 年化无风险收益率，必须大于 -1；Sharpe 计算会按收益频率换算。
   risk_free_rate: 0.0
+  # 指标使用的收益序列频率；可选 daily、rebalance。
   return_frequency: daily
+  # 日频年化因子；必须为正整数，A 股通常使用 252。
   annual_trading_days: 252
+  # 调仓频率年化使用的自然周数；必须为正整数，通常使用 52。
   annual_weeks: 52
+  # 年化换手是否计入首次建仓换手；可选 true、false。
   include_initial_turnover: true
+  # simple 回测年化收益口径；linear 线性年化，compound 几何复利年化。
   simple_annual_return: linear
+  # account 回测年化收益口径；linear 线性年化，compound 几何复利年化。
   account_annual_return: compound
 
+# 绘图总开关已由 run.plotter 控制；本分区设置文件格式、布局和各类子图。
 plots:
+  # 同时输出的图像格式；可选 png、pdf、svg，可配置一个或多个且不可为空。
   formats:
+    # 当前只输出 PNG；可继续添加 - pdf 或 - svg。
     - png
+  # 位图分辨率；必须为正整数，主要影响 PNG 清晰度和文件大小。
   dpi: 100
+  # 图像宽度，单位为英寸；必须为正数。
   width: 13.0
+  # 每个子图行的高度，单位为英寸；必须为正数。
   row_height: 3.4
+  # Matplotlib 字体族名称；需为运行环境已安装字体。
   font_family: DejaVu Sans
+  # 回测图读取的曲线频率；可选 daily、rebalance，且回测结果必须保存该频率。
   curve_frequency: daily
+  # 缺少某类上游结果时的处理；skip 跳过对应图，error 立即报错。
   missing_results: error
+  # 添加到图中的自由文本备注；空字符串表示不显示备注。
   note: ""
+  # 图例每行最多列数；必须为正整数。
   legend_columns: 4
+  # 因子值直方图和可选 KDE 曲线。
   distribution:
+    # 是否输出因子分布图；false 时本分区只保留 enabled 字段。
     enabled: true
+    # 直方图箱数；必须为正整数。
     bins: 60
+    # true 显示概率密度，false 显示样本计数。
     density: true
+    # 是否叠加核密度估计曲线；可选 true、false。
     kde: true
+    # 绘图前裁剪的 [下分位, 上分位]；null 不裁剪，例如 [0.01, 0.99]。
     clip_quantiles: null
+    # KDE 和直方图最多使用的有效样本数；必须为正整数，超出时等距抽样。
     max_points: 100000
+  # 分组收益、IC 和 RankIC 评价图。
   evaluation:
+    # 是否输出评价图；false 时本分区只保留 enabled 字段。
     enabled: true
+    # 分组收益面板位置；可选 left、right。
     group_panel: left
+    # 分组曲线颜色序列；至少两个 Matplotlib 合法颜色，数量不足时循环使用。
     group_colors:
+      # 第一种分组曲线颜色。
       - "#A91E22"
+      # 第二种分组曲线颜色。
       - "#A68B32"
+      # 第三种分组曲线颜色。
       - "#137A3F"
+    # Pearson IC 曲线颜色；填写 Matplotlib 支持的颜色字符串。
     ic_color: "#D06A2D"
+    # Spearman RankIC 曲线颜色；填写 Matplotlib 支持的颜色字符串。
     rank_ic_color: "#174A73"
+  # simple 回测曲线和指标摘要图。
   simple:
+    # 是否输出 simple 回测图；false 时本分区只保留 enabled 字段。
     enabled: true
+    # 当前实现仅支持 rows，即不同调仓周期按行排列。
     layout: rows
+    # 分组曲线颜色序列；至少配置两个颜色，数量不足时循环使用。
     group_colors:
+      # 第一种分组曲线颜色。
       - "#A91E22"
+      # 第二种分组曲线颜色。
       - "#A68B32"
+      # 第三种分组曲线颜色。
       - "#137A3F"
+    # 基准曲线颜色；填写 Matplotlib 支持的颜色字符串。
     benchmark_color: "#777777"
+    # 指标摘要选用的分位组 [下界, 上界]，必须与某个 grouping 区间一致。
     summary_quantile: [0.8, 1.0]
+    # 摘要表显示的指标；列表不可为空、不可重复，支持的完整集合见下方注释。
+    # 可选 annual_return、annual_volatility、sharpe、max_drawdown、annual_turnover、
+    # annual_cost_rate、total_cost_rate、net_total_return、gross_total_return、
+    # benchmark_total_return、excess_total_return、tracking_error、information_ratio。
     metric_columns:
+      # 年化收益率。
       - annual_return
+      # 年化波动率。
       - annual_volatility
+      # 夏普比率。
       - sharpe
+      # 最大回撤。
       - max_drawdown
+      # 年化换手率。
       - annual_turnover
+  # account 回测净值曲线图。
   account:
+    # 是否输出 account 回测图；false 时本分区只保留 enabled 字段。
     enabled: true
+    # 调仓周期布局；可选 rows 按行或 columns 按列。
     layout: rows
+    # 分组曲线颜色序列；至少配置两个颜色，数量不足时循环使用。
     group_colors:
+      # 第一种账户曲线颜色。
       - "#CB3C3C"
+      # 第二种账户曲线颜色。
       - "#198754"
+    # 基准曲线颜色；填写 Matplotlib 支持的颜色字符串。
     benchmark_color: "#888888"

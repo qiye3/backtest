@@ -1,6 +1,12 @@
+# 因子唯一名称；同时作为输出子目录名，批量配置目录内不得重复。
 name: return_10d
+# 动态导入实现；模块必须能通过当前 Python 环境的标准导入机制访问。
 implementation:
+  # 定义因子类的完整 Python 模块名，不填写 .py 文件后缀。
   module: src.factors.ExampleFactor
+  # 模块中继承 src.factors.base.Factor 的具体类名。
   class: ExampleFactor
+# 直接传给具体 Factor 类的业务参数；参数名称和可选值由该类定义。
 params:
+  # 收益回看交易日数；应为正整数，10 表示当前复权价相对 10 个交易日前的收益。
   lookback_days: 10

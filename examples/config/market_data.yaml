@@ -1,21 +1,49 @@
+# 该文件演示只构建 MarketData，不包含因子、评价或回测阶段设置。
 market_data:
+  # 原始数据根目录；可使用绝对路径，或使用相对本 YAML 文件的相对路径。
   source_root: /app/openclaw/.openclaw/workspace/.cowork/workspace/default/【指数增强策略】数据获取/data
+  # Parquet 缓存根目录；实际缓存写入其下以 YAML 文件名命名的 market_data 子目录。
   cache_root: ../../data
+  # 面板开始日期，格式为 YYYY-MM-DD；因子需要历史窗口时应提前覆盖预热期。
   start_date: "2022-01-01"
+  # 面板结束日期，格式为 YYYY-MM-DD，且不得早于 start_date。
   end_date: "2026-08-26"
+  # 用于提取交易日历的基准指数；必须同时出现在 index_price.codes 中。
   benchmark_index: 000906.SH
+  # 历史股票池指数；当前实现固定要求中证800与中证1000同时存在。
   universe_indices:
+    # 中证800指数 Wind 代码。
     - 000906.SH
+    # 中证1000指数 Wind 代码。
     - 000852.SH
+  # 需要从原始 CSV 构建为日频面板的来源集合。
+  # 可选来源名：stock_quote、stock_valuation、index_price、index_total_return、
+  # index_weights_monthly、index_weights_daily_close、financial_income、
+  # financial_balance_sheet、financial_cashflow、financial_indicators、ratings、
+  # consensus_wind、consensus_suntime、industry_history、free_float、holder_number、
+  # margin_trade、money_flow；其中 index_price 和 stock_quote 为当前项目必需来源。
   sources:
+    # 指数日行情来源，用于定义交易日历和读取基准价格。
     index_price:
+      # 要读取的指数列表；可添加其他具有对应原始文件的 Wind 指数代码。
       codes:
+        # 中证800指数，也是本配置的 benchmark_index。
         - 000906.SH
+      # 要缓存的原始字段列表；S_DQ_CLOSE 为必需字段。
       fields:
+        # 指数未复权收盘价。
         - S_DQ_CLOSE
+    # 个股日行情来源；日频数据只按交易日对齐，不对原始缺失值前向填充。
     stock_quote:
+      # 要缓存的原始字段列表；可增加同表中真实存在的开盘价、状态等字段。
       fields:
+        # 个股复权收盘价，为示例收益因子和当前回测取价的必需字段。
         - S_DQ_ADJCLOSE
+    # 财务指标来源；按公告日构建 PIT 状态，避免使用尚未公布的数据。
     financial_indicators:
+      # 要缓存的财务指标字段；系统还会自动附带 REPORT_PERIOD 报告期。
       fields:
+        # 单季度归母净利润同比，用于 growth_np_sue 示例因子。
         - S_QFA_YOYNETPROFIT
+      # 所有来源均可增加 filters 映射，按“原始列: 单个标量值”过滤记录。
+      # consensus_wind 和 consensus_suntime 还必须配置 forecast_year_offset 整数。

@@ -1,7 +1,14 @@
+# 因子唯一名称；批量运行时用于区分内存结果、Parquet 和图像输出。
 name: growth_np_sue
+# 动态导入项目外部示例因子类。
 implementation:
+  # 定义 GrowthFactor 的完整 Python 模块名；项目根目录需位于 Python 搜索路径。
   module: examples.code.GrowthFactor
+  # 模块中继承 src.factors.base.Factor 的具体类名。
   class: GrowthFactor
+# GrowthFactor 构造季度历史统计量所需的参数，两个字段均为必填。
 params:
+  # 待标准化的财务字段；可替换为 market_data.financial_indicators.fields 中的其他数值字段。
   value_field: S_QFA_YOYNETPROFIT
+  # 计算历史均值和样本标准差使用的连续自然季度数；应为大于 1 的整数。
   history_quarters: 8
