@@ -102,11 +102,10 @@ def plot_backtest(
         style_date_axis(axis)
 
     if mode == "simple":
-        figure.legend(
+        plot_axes[0].legend(
             legend_handles,
             [handle.get_label() for handle in legend_handles],
             loc="upper left",
-            bbox_to_anchor=(0.055, 0.945),
             ncol=min(11, len(legend_handles)),
             frameon=False,
             fontsize=8,
