@@ -242,7 +242,7 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(
                 {
                     path.name
-                    for path in (output_root / "overall").glob("*.png")
+                    for path in (output_root / "00_overall").glob("*.png")
                 },
                 OVERALL_FIGURE_FILES,
             )

@@ -293,7 +293,7 @@ def _run_overall_evaluation(
     plot_overall_evaluation(
         overall_result=overall_result,
         settings=config.raw["plots"],
-        output_directory=config.output_root / "overall",
+        output_directory=config.output_root / "00_overall",
     )
     return overall_result
 
