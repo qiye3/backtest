@@ -78,7 +78,19 @@ class EndToEndTests(unittest.TestCase):
             )
             config_data["output"]["save_backtest_details"] = True
             self._write_config(config_path, config_data)
-            full_results = run(load_config(config_path))
+            config = load_config(config_path)
+            self.assertEqual(
+                [
+                    config.raw[section_name]["factor_lag_days"]
+                    for section_name in [
+                        "group_return",
+                        "simple_backtest",
+                        "account_backtest",
+                    ]
+                ],
+                [0, 0, 0],
+            )
+            full_results = run(config)
             evaluation = full_results["group_return"]["return_10d"]
             self.assertEqual(
                 list(
@@ -235,7 +247,6 @@ class EndToEndTests(unittest.TestCase):
             {
                 "start": "2024-02-02",
                 "end": "2024-06-07",
-                "factor_lag_days": 0,
             }
         )
         for section_name in ["simple_backtest", "account_backtest"]:
@@ -243,7 +254,6 @@ class EndToEndTests(unittest.TestCase):
                 {
                     "start": "2024-02-02",
                     "end": "2024-06-21",
-                    "factor_lag_days": 0,
                     "transaction_cost_rate": 0.0,
                     "missing_price_policy": "error",
                 }

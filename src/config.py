@@ -85,12 +85,15 @@ DEFAULT_GROUPING = {
 }
 CONFIG_DEFAULTS = {
     "group_return": {
+        "factor_lag_days": 0,
         "grouping": deepcopy(DEFAULT_GROUPING),
     },
     "simple_backtest": {
+        "factor_lag_days": 0,
         "grouping": deepcopy(DEFAULT_GROUPING),
     },
     "account_backtest": {
+        "factor_lag_days": 0,
         "grouping": deepcopy(DEFAULT_GROUPING),
     },
     "plots": {
@@ -211,7 +214,7 @@ def load_config(config_path: str | Path) -> RunConfig:
 def _merge_config_defaults(
     configured_values: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """递归合并默认分组和绘图展示设置。"""
+    """递归合并因子滞后、默认分组和绘图展示设置。"""
     merged_config = deepcopy(CONFIG_DEFAULTS)
     pending_sections = [(merged_config, configured_values)]
     while pending_sections:
