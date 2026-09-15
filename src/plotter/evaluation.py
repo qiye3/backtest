@@ -26,6 +26,7 @@ def plot_evaluation(
     group_return_result: Mapping[str, Any],
     settings: Mapping[str, Any],
     output_stem: Path,
+    evaluation_settings: Mapping[str, Any] | None = None,
 ) -> list[Path]:
     """每个未来收益周期绘制一组收益柱图和一组 IC 曲线。"""
     definitions = group_return_result["definitions"]
@@ -54,6 +55,11 @@ def plot_evaluation(
         figure,
         f"{factor_name} | Forward-return evaluation",
         settings,
+        annotation=(
+            _evaluation_config_label(evaluation_settings)
+            if evaluation_settings is not None
+            else None
+        ),
     )
 
     for row_position, horizon in enumerate(horizons.itertuples(index=False)):
@@ -175,3 +181,16 @@ def _horizon_label(horizon_value: int, horizon_unit: str) -> str:
     singular_label, plural_label = unit_labels[horizon_unit]
     unit_label = singular_label if horizon_value == 1 else plural_label
     return f"{int(horizon_value)} {unit_label}"
+
+
+def _evaluation_config_label(settings: Mapping[str, Any]) -> str:
+    """格式化评价图需要展示的采样日期与价格口径。"""
+    sampling = settings["sampling"]
+    return " | ".join(
+        [
+            f"weekday: {sampling['weekday']}",
+            f"every_n_weeks: {sampling['every_n_weeks']}",
+            f"anchor_date: {sampling['anchor_date']}",
+            f"reference_price: {settings['reference_price']}",
+        ]
+    )

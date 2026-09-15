@@ -17,6 +17,78 @@ RESULT_FILE_NAMES = {
 }
 
 
+def save_metrics_summary(
+    results_by_mode: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    evaluation_results: Mapping[str, Mapping[str, Any]] | None,
+    output_root: str | Path,
+) -> Path:
+    """汇总各因子 G10 的回测指标及同周期 IC。"""
+    evaluation_results = evaluation_results or {}
+    metric_frames = []
+    for mode_results in results_by_mode.values():
+        for factor_name, factor_result in mode_results.items():
+            factor_metrics = factor_result["metrics"].loc[
+                lambda frame: frame["group_id"] == "G10",
+                [
+                    "rebalance_frequency",
+                    "rebalance_interval",
+                    "mode",
+                    "total_return",
+                    "annual_return",
+                    "sharpe",
+                    "annual_turnover",
+                    "benchmark_total_return",
+                    "excess_total_return",
+                ],
+            ].copy()
+            factor_metrics.insert(0, "factor_name", factor_name)
+            factor_metrics = factor_metrics.rename(
+                columns={"annual_turnover": "turnover"}
+            )
+            factor_metrics = _attach_matching_ic(
+                factor_metrics,
+                evaluation_results.get(factor_name),
+            )
+            metric_frames.append(factor_metrics)
+
+    output_path = Path(output_root) / "metrics_summary.csv"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.concat(metric_frames, ignore_index=True).to_csv(output_path, index=False)
+    return output_path
+
+
+def _attach_matching_ic(
+    factor_metrics: pd.DataFrame,
+    evaluation_result: Mapping[str, Any] | None,
+) -> pd.DataFrame:
+    """按日度或周度调仓间隔附加同周期 IC 均值和 ICIR。"""
+    if evaluation_result is None:
+        factor_metrics["mean_ic"] = float("nan")
+        factor_metrics["icir"] = float("nan")
+        return factor_metrics
+
+    rebalance_frequency = factor_metrics["rebalance_frequency"].iloc[0]
+    horizon_unit = {
+        "daily": "trading_days",
+        "weekly": "weeks",
+    }[rebalance_frequency]
+    ic_summary = evaluation_result["ic_summary"].loc[
+        lambda frame: frame["horizon_unit"] == horizon_unit,
+        ["horizon_value", "ic_mean", "icir"],
+    ].rename(
+        columns={
+            "horizon_value": "rebalance_interval",
+            "ic_mean": "mean_ic",
+        }
+    )
+    return factor_metrics.merge(
+        ic_summary,
+        on="rebalance_interval",
+        how="left",
+        validate="many_to_one",
+    )
+
+
 def save_backtest_results(
     results: Mapping[str, Mapping[str, Any]],
     output_root: str | Path,

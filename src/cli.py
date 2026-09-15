@@ -8,8 +8,12 @@ from typing import Any
 import pandas as pd
 
 from src.backtest import run_backtests
-from src.backtest.io import load_backtest_results, save_backtest_results
-from src.config import RunConfig, load_config
+from src.backtest.io import (
+    load_backtest_results,
+    save_backtest_results,
+    save_metrics_summary,
+)
+from src.config import RunConfig, load_config, save_config_snapshot
 from src.data.market_data import MarketData
 from src.factors import calc_factors, load_factors
 from src.factors.io import load_factor_panels, save_factor_panels
@@ -23,6 +27,7 @@ from src.plotter import plot_factors
 
 def run(config: RunConfig) -> dict[str, Any]:
     """按配置固定顺序运行启用阶段，并优先复用本次内存结果。"""
+    save_config_snapshot(config)
     run_settings = config.raw["run"]
     stage_results: dict[str, Any] = {}
     market_data = _load_market_data(config)
@@ -64,6 +69,18 @@ def run(config: RunConfig) -> dict[str, Any]:
     if account_backtest_results is not None:
         stage_results["account_backtest"] = account_backtest_results
 
+    completed_backtests = {}
+    if simple_backtest_results is not None:
+        completed_backtests["simple"] = simple_backtest_results
+    if account_backtest_results is not None:
+        completed_backtests["account"] = account_backtest_results
+    if completed_backtests:
+        save_metrics_summary(
+            completed_backtests,
+            group_return_results,
+            config.output_root,
+        )
+
     if run_settings["plotter"]:
         if group_return_results is None:
             group_return_results = load_evaluation_results(
@@ -89,6 +106,11 @@ def run(config: RunConfig) -> dict[str, Any]:
             group_return_results=group_return_results,
             simple_backtest_results=simple_backtest_results,
             account_backtest_results=account_backtest_results,
+            evaluation_settings=config.raw["group_return"],
+            backtest_settings={
+                "simple": config.raw["simple_backtest"],
+                "account": config.raw["account_backtest"],
+            },
         )
         stage_results["plotter"] = plot_paths
     return stage_results

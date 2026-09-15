@@ -73,6 +73,13 @@ DEFAULT_GROUP_COLORS = [
     "#D73027",
     "#A50026",
 ]
+DEFAULT_METRIC_COLUMNS = [
+    "annual_return",
+    "annual_volatility",
+    "sharpe",
+    "max_drawdown",
+    "annual_turnover",
+]
 DEFAULT_GROUPING = {
     "quantile_edges": DEFAULT_QUANTILE_EDGES,
     "min_stocks": 20,
@@ -127,19 +134,15 @@ CONFIG_DEFAULTS = {
             "group_colors": list(DEFAULT_GROUP_COLORS),
             "benchmark_color": "#777777",
             "summary_quantile": [0.9, 1.0],
-            "metric_columns": [
-                "annual_return",
-                "annual_volatility",
-                "sharpe",
-                "max_drawdown",
-                "annual_turnover",
-            ],
+            "metric_columns": list(DEFAULT_METRIC_COLUMNS),
         },
         "account": {
             "enabled": True,
             "layout": "rows",
             "group_colors": list(DEFAULT_GROUP_COLORS),
             "benchmark_color": "#777777",
+            "summary_quantile": [0.9, 1.0],
+            "metric_columns": list(DEFAULT_METRIC_COLUMNS),
         },
     },
 }
@@ -153,6 +156,17 @@ class RunConfig:
     raw: dict[str, Any]
     output_root: Path
     factor_config_directory: Path | None
+
+
+def save_config_snapshot(config: RunConfig) -> Path:
+    """把本次实际使用且已补全默认值的完整配置保存到输出根目录。"""
+    output_path = config.output_root / "config_snapshot.yaml"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        yaml.safe_dump(config.raw, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    return output_path
 
 
 def load_config(config_path: str | Path) -> RunConfig:
@@ -631,7 +645,34 @@ def _validate_simple_plot(settings: Mapping[str, Any]) -> None:
         return
     _choice(settings["layout"], {"rows"}, "plots.simple.layout")
     _colors(settings["group_colors"], "plots.simple.group_colors")
-    _quantile_pair(settings["summary_quantile"], "plots.simple.summary_quantile")
+    _validate_metric_table(settings, "plots.simple")
+
+
+def _validate_account_plot(settings: Mapping[str, Any]) -> None:
+    """校验 account 曲线和指标摘要设置。"""
+    fields = {
+        "enabled",
+        "layout",
+        "group_colors",
+        "benchmark_color",
+        "summary_quantile",
+        "metric_columns",
+    }
+    _plot_keys(settings, fields, "account")
+    if not settings["enabled"]:
+        return
+    _choice(
+        settings["layout"],
+        {"rows", "columns"},
+        "plots.account.layout",
+    )
+    _colors(settings["group_colors"], "plots.account.group_colors")
+    _validate_metric_table(settings, "plots.account")
+
+
+def _validate_metric_table(settings: Mapping[str, Any], location: str) -> None:
+    """校验回测图底部指标表的分位组和展示字段。"""
+    _quantile_pair(settings["summary_quantile"], f"{location}.summary_quantile")
     metric_columns = settings["metric_columns"]
     if (
         not isinstance(metric_columns, list)
@@ -639,20 +680,7 @@ def _validate_simple_plot(settings: Mapping[str, Any]) -> None:
         or len(metric_columns) != len(set(metric_columns))
         or set(metric_columns) - PLOT_METRICS
     ):
-        raise ValueError("plots.simple.metric_columns 包含未知或重复指标")
-
-
-def _validate_account_plot(settings: Mapping[str, Any]) -> None:
-    """校验 account 曲线设置。"""
-    fields = {"enabled", "layout", "group_colors", "benchmark_color"}
-    _plot_keys(settings, fields, "account")
-    if settings["enabled"]:
-        _choice(
-            settings["layout"],
-            {"rows", "columns"},
-            "plots.account.layout",
-        )
-        _colors(settings["group_colors"], "plots.account.group_colors")
+        raise ValueError(f"{location}.metric_columns 包含未知或重复指标")
 
 
 def _plot_keys(

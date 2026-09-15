@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -24,12 +23,15 @@ def plot_factor(
     group_return_result: Mapping[str, Any] | None = None,
     simple_backtest_result: Mapping[str, Any] | None = None,
     account_backtest_result: Mapping[str, Any] | None = None,
+    evaluation_settings: Mapping[str, Any] | None = None,
+    backtest_settings: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, list[Path]]:
     """从一个因子的内存面板和计算结果生成全部已启用图表。"""
     if not settings["enabled"]:
         return {}
     output_directory = Path(output_directory)
     output_directory.mkdir(parents=True, exist_ok=True)
+    backtest_settings = backtest_settings or {}
     sampled_factor_panel = (
         _sample_factor_panel(
             factor_panel,
@@ -58,12 +60,14 @@ def plot_factor(
             result,
             settings,
             stem,
+            evaluation_settings,
         ),
         "evaluation": lambda result, stem: plot_evaluation(
             factor_name,
             result,
             settings,
             stem,
+            evaluation_settings,
         ),
         "simple": lambda result, stem: plot_backtest(
             factor_name,
@@ -71,6 +75,7 @@ def plot_factor(
             "simple",
             settings,
             stem,
+            backtest_settings.get("simple"),
         ),
         "account": lambda result, stem: plot_backtest(
             factor_name,
@@ -78,6 +83,7 @@ def plot_factor(
             "account",
             settings,
             stem,
+            backtest_settings.get("account"),
         ),
     }
 
@@ -105,11 +111,6 @@ def plot_factor(
                 output_stem,
             )
 
-    config_path = output_directory / "plot_config.json"
-    config_path.write_text(
-        json.dumps(settings, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
     return generated
 
 
@@ -120,6 +121,8 @@ def plot_factors(
     group_return_results: Mapping[str, Mapping[str, Any]] | None = None,
     simple_backtest_results: Mapping[str, Mapping[str, Any]] | None = None,
     account_backtest_results: Mapping[str, Mapping[str, Any]] | None = None,
+    evaluation_settings: Mapping[str, Any] | None = None,
+    backtest_settings: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, dict[str, list[Path]]]:
     """批量绘制因子结果，每个因子写入独立 figures 目录。"""
     group_return_results = group_return_results or {}
@@ -135,6 +138,8 @@ def plot_factors(
             group_return_result=group_return_results.get(factor_name),
             simple_backtest_result=simple_backtest_results.get(factor_name),
             account_backtest_result=account_backtest_results.get(factor_name),
+            evaluation_settings=evaluation_settings,
+            backtest_settings=backtest_settings,
         )
         for factor_name, factor_panel in factor_panels.items()
     }

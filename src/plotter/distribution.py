@@ -19,6 +19,7 @@ def plot_distribution(
     factor_panel: pd.DataFrame,
     settings: Mapping[str, Any],
     output_stem: Path,
+    sampling_settings: Mapping[str, Any] | None = None,
 ) -> list[Path]:
     """绘制有限因子值分布；裁剪和抽样只影响展示。"""
     plot_settings = settings["distribution"]
@@ -38,6 +39,16 @@ def plot_distribution(
             plot_settings["max_points"],
             replace=False,
         )
+    value_series = pd.Series(values)
+    distribution_statistics = {
+        "Mean": float(value_series.mean()),
+        "Median": float(value_series.median()),
+        "Min": float(value_series.min()),
+        "Max": float(value_series.max()),
+        "Skewness": float(value_series.skew()),
+        "Kurtosis (excess)": float(value_series.kurt()),
+    }
+    standard_deviation = float(value_series.std(ddof=0))
 
     figure, axis = plt.subplots(
         figsize=(settings["width"], settings["row_height"] * 1.5),
@@ -53,6 +64,19 @@ def plot_distribution(
         linewidth=0.4,
         label="Histogram",
     )
+    mean_value = distribution_statistics["Mean"]
+    for line_value, line_label, line_style in [
+        (mean_value - standard_deviation, "Mean - 1 std", "--"),
+        (mean_value, "Mean", "-"),
+        (mean_value + standard_deviation, "Mean + 1 std", "--"),
+    ]:
+        axis.axvline(
+            line_value,
+            color="#8C2D24",
+            linewidth=1.3,
+            linestyle=line_style,
+            label=line_label,
+        )
     if (
         plot_settings["kde"]
         and len(values) >= 3
@@ -76,7 +100,7 @@ def plot_distribution(
     elif plot_settings["kde"]:
         axis.text(
             0.98,
-            0.95,
+            0.55,
             "Density unavailable: constant or sparse values",
             transform=axis.transAxes,
             horizontalalignment="right",
@@ -88,6 +112,11 @@ def plot_distribution(
         figure,
         f"{factor_name} | Factor distribution",
         settings,
+        annotation=(
+            _distribution_sampling_label(sampling_settings)
+            if sampling_settings is not None
+            else None
+        ),
     )
     axis.set_xlabel("Factor value")
     axis.set_ylabel("Density" if plot_settings["density"] else "Count")
@@ -97,6 +126,37 @@ def plot_distribution(
         f"{clipping_note}",
         fontsize=10,
     )
+    axis.text(
+        0.98,
+        0.95,
+        "\n".join(
+            f"{name}: {value:.6g}"
+            for name, value in distribution_statistics.items()
+        ),
+        transform=axis.transAxes,
+        horizontalalignment="right",
+        verticalalignment="top",
+        fontsize=9,
+        bbox={
+            "boxstyle": "round,pad=0.4",
+            "facecolor": "white",
+            "edgecolor": "#B0BEC5",
+            "alpha": 0.9,
+        },
+    )
     style_axis(axis)
-    axis.legend(frameon=False)
+    axis.legend(loc="upper left", frameon=False)
     return save_figure(figure, output_stem, settings)
+
+
+def _distribution_sampling_label(settings: Mapping[str, Any]) -> str:
+    """格式化因子分布样本使用的周度截面抽样策略。"""
+    sampling = settings["sampling"]
+    return " | ".join(
+        [
+            f"weekday: {sampling['weekday']}",
+            f"every_n_weeks: {sampling['every_n_weeks']}",
+            f"anchor_date: {sampling['anchor_date']}",
+            f"holiday_policy: {sampling['holiday_policy']}",
+        ]
+    )

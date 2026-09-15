@@ -91,6 +91,39 @@ class EndToEndTests(unittest.TestCase):
                 [0, 0, 0],
             )
             full_results = run(config)
+            metrics_summary = pd.read_csv(
+                output_root / "metrics_summary.csv"
+            )
+            self.assertEqual(len(metrics_summary), 12)
+            self.assertEqual(
+                list(metrics_summary.columns),
+                [
+                    "factor_name",
+                    "rebalance_frequency",
+                    "rebalance_interval",
+                    "mode",
+                    "total_return",
+                    "annual_return",
+                    "sharpe",
+                    "turnover",
+                    "benchmark_total_return",
+                    "excess_total_return",
+                    "mean_ic",
+                    "icir",
+                ],
+            )
+            self.assertEqual(
+                set(metrics_summary["factor_name"]),
+                set(FACTOR_NAMES),
+            )
+            self.assertEqual(
+                set(metrics_summary["mode"]),
+                {"simple", "account"},
+            )
+            self.assertTrue(
+                metrics_summary[["mean_ic", "icir"]].notna().all().all()
+            )
+            self.assertTrue((output_root / "config_snapshot.yaml").is_file())
             evaluation = full_results["group_return"]["return_10d"]
             self.assertEqual(
                 list(
@@ -329,6 +362,9 @@ class EndToEndTests(unittest.TestCase):
                     for path in (factor_directory / "figures").glob("*.png")
                 },
                 FIGURE_FILES,
+            )
+            self.assertFalse(
+                (factor_directory / "figures" / "plot_config.json").exists()
             )
             factor_panel = pd.read_parquet(
                 factor_directory / "factor.parquet"

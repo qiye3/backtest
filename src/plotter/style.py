@@ -56,11 +56,39 @@ def set_figure_title(
     figure: plt.Figure,
     text: str,
     settings: Mapping[str, Any],
+    annotation: str | None = None,
 ) -> None:
-    """设置主标题，并在配置存在说明时追加副标题。"""
-    subtitle = f"\n{settings['note']}" if settings["note"] else ""
+    """设置加粗主标题，并把运行口径作为普通字重标注。"""
+    annotation_lines = [
+        line
+        for line in [annotation, settings["note"]]
+        if line
+    ]
+    if annotation_lines:
+        figure_height = float(figure.get_size_inches()[1])
+        title_y = 1 - 0.05 / figure_height
+        annotation_y = 1 - 0.28 / figure_height
+        reserved_height = 0.58 + 0.18 * (len(annotation_lines) - 1)
+        content_top = 1 - reserved_height / figure_height
+        figure.suptitle(
+            text,
+            fontsize=14,
+            fontweight="bold",
+            y=title_y,
+        )
+        figure.get_layout_engine().set(rect=(0, 0, 1, content_top))
+        figure.text(
+            0.5,
+            annotation_y,
+            "\n".join(annotation_lines),
+            horizontalalignment="center",
+            verticalalignment="top",
+            fontsize=9,
+            fontweight="normal",
+        )
+        return
     figure.suptitle(
-        text + subtitle,
+        text,
         fontsize=14,
         fontweight="bold",
     )

@@ -55,14 +55,14 @@ def plot_backtest(
     mode: str,
     settings: Mapping[str, Any],
     output_stem: Path,
+    backtest_settings: Mapping[str, Any] | None = None,
 ) -> list[Path]:
-    """按调仓周期绘制回测曲线，并为 simple 模式附加指标表。"""
+    """按调仓周期绘制回测曲线，并附加指定分位组的指标表。"""
     periods = sorted(backtest_result["periods"])
     rebalance_frequency = backtest_result["rebalance_frequency"]
     plot_settings = settings[mode]
     figure, plot_axes, table_axis = _create_backtest_axes(
         period_count=len(periods),
-        mode=mode,
         settings=settings,
         plot_settings=plot_settings,
     )
@@ -75,9 +75,13 @@ def plot_backtest(
         figure,
         f"{factor_name} | {title_suffix}",
         settings,
+        annotation=(
+            _backtest_config_label(backtest_settings)
+            if backtest_settings is not None
+            else None
+        ),
     )
 
-    legend_handles = []
     for axis, interval in zip(plot_axes, periods):
         handles = _draw_period_curves(
             axis=axis,
@@ -89,45 +93,33 @@ def plot_backtest(
             curve_frequency=settings["curve_frequency"],
             plot_settings=plot_settings,
         )
-        if not legend_handles:
-            legend_handles = handles
-        if mode == "account":
-            axis.legend(
-                loc="upper left",
-                ncol=min(settings["legend_columns"], len(handles)),
-                frameon=False,
-                fontsize=8,
-            )
-        style_axis(axis)
-        style_date_axis(axis)
-
-    if mode == "simple":
-        plot_axes[0].legend(
-            legend_handles,
-            [handle.get_label() for handle in legend_handles],
+        axis.legend(
             loc="upper left",
-            ncol=min(11, len(legend_handles)),
+            ncol=min(settings["legend_columns"], len(handles)),
             frameon=False,
             fontsize=8,
         )
-        _draw_summary_table(
-            table_axis=table_axis,
-            metrics=backtest_result["metrics"],
-            periods=periods,
-            rebalance_frequency=rebalance_frequency,
-            plot_settings=plot_settings,
-        )
+        style_axis(axis)
+        axis.grid(axis="x", alpha=0.18)
+        style_date_axis(axis)
+
+    _draw_summary_table(
+        table_axis=table_axis,
+        metrics=backtest_result["metrics"],
+        periods=periods,
+        rebalance_frequency=rebalance_frequency,
+        plot_settings=plot_settings,
+    )
     return save_figure(figure, output_stem, settings)
 
 
 def _create_backtest_axes(
     period_count: int,
-    mode: str,
     settings: Mapping[str, Any],
     plot_settings: Mapping[str, Any],
-) -> tuple[plt.Figure, list[plt.Axes], plt.Axes | None]:
-    """按模式和布局创建曲线面板与 simple 指标表区域。"""
-    if mode == "simple":
+) -> tuple[plt.Figure, list[plt.Axes], plt.Axes]:
+    """按行或按列创建曲线面板及底部指标表区域。"""
+    if plot_settings["layout"] == "rows":
         figure = plt.figure(
             figsize=(
                 settings["width"],
@@ -146,24 +138,20 @@ def _create_backtest_axes(
         ]
         return figure, plot_axes, figure.add_subplot(grid[period_count, 0])
 
-    rows, columns = (
-        (period_count, 1)
-        if plot_settings["layout"] == "rows"
-        else (1, period_count)
-    )
-    figure, axes = plt.subplots(
-        rows,
-        columns,
-        figsize=(
-            settings["width"]
-            if columns == 1
-            else settings["width"] * 1.4,
-            settings["row_height"] * rows + 0.7,
-        ),
-        squeeze=False,
+    figure = plt.figure(
+        figsize=(settings["width"] * 1.4, settings["row_height"] + 1.8),
         layout="constrained",
     )
-    return figure, list(axes.flat), None
+    grid = figure.add_gridspec(
+        2,
+        period_count,
+        height_ratios=[1, 0.45],
+    )
+    plot_axes = [
+        figure.add_subplot(grid[0, position])
+        for position in range(period_count)
+    ]
+    return figure, plot_axes, figure.add_subplot(grid[1, :])
 
 
 def _draw_period_curves(
@@ -250,7 +238,7 @@ def _draw_summary_table(
     rebalance_frequency: str,
     plot_settings: Mapping[str, Any],
 ) -> None:
-    """绘制 simple 回测指定分位组的跨周期指标摘要。"""
+    """绘制指定分位组的跨调仓周期指标摘要。"""
     table_axis.axis("off")
     table_axis.set_title(
         f"{_summary_group_label(plot_settings['summary_quantile'])} summary"
@@ -345,3 +333,23 @@ def _summary_group_label(summary_quantile: Sequence[float]) -> str:
     if np.isclose(quantile_lower, 0.9) and np.isclose(quantile_upper, 1):
         return "q0.1 / Q10"
     return f"quantile [{quantile_lower:.2f}, {quantile_upper:.2f}]"
+
+
+def _backtest_config_label(settings: Mapping[str, Any]) -> str:
+    """格式化回测图需要展示的调仓、价格与费率口径。"""
+    rebalance = settings["rebalance"]
+    fields = []
+    if rebalance["frequency"] == "weekly":
+        fields.extend(
+            [
+                f"weekday: {rebalance['weekday']}",
+                f"anchor_date: {rebalance['anchor_date']}",
+            ]
+        )
+    fields.extend(
+        [
+            f"trade_price: {settings['trade_price']}",
+            f"transaction_cost_rate: {settings['transaction_cost_rate']}",
+        ]
+    )
+    return " | ".join(fields)
