@@ -1,44 +1,46 @@
-# 主配置只保留运行选择和会改变研究口径的参数；省略项使用 src.config 中的默认值。
-# 运行命令：python -m src.cli --config configs/base_config.yaml
+# 主配置串联 Wind 数据、因子、评价和回测；运行命令为：
+# python -m scripts.run_wind_cache_backtests --config configs/base_config.yaml
+# 默认十分组和绘图展示参数由 src.config 提供，需要调整时可在对应分区覆盖。
 
-# 选择本次运行阶段；CLI 不提供阶段覆盖参数。
+# 控制本次运行哪些阶段；CLI 不提供阶段覆盖参数。
 run:
-  # 计算 Factor YAML 目录中的全部因子。
+  # 是否计算 Factor YAML 目录中的全部因子，并覆盖保存 factor.parquet。
   factors: true
-  # 计算分组收益、IC 和 RankIC。
+  # 是否计算分组收益、IC 和 RankIC，并覆盖保存 group_return.parquet。
   group_return: true
-  # 运行归一化净值回测。
+  # 是否运行归一化净值回测，并覆盖保存 simple_backtest.parquet。
   simple_backtest: true
-  # 运行带现金账户的回测。
+  # 是否运行带现金账户和成交约束的回测，并覆盖保存 account_backtest.parquet。
   account_backtest: true
-  # 根据本次生成或已有结果绘图。
+  # 是否根据已有或本次生成的结果绘图。
   plotter: true
-  # 最大并发工作线程数
+  # 因子间并行计算的线程数；1 表示串行执行。
   max_workers: 4
   # true 从原始 CSV 重建市场缓存；false 优先复用已有 Parquet。
   refresh_market_data: false
 
-
+# Factor 阶段设置；仅在 run.factors=true 时必填。
 factors:
-  # Factor YAML 目录；相对路径以本主配置文件所在目录为基准。
+  # Factor YAML 所在目录；相对路径以本主配置文件所在目录为基准。
   config_directory: ../examples/config/base_factors
 
 output:
   # 每个因子的结果和图像写入该目录下的同名子目录。
-  root: ../outputs
+  root: ../outputs_real_wind
+  # false 仅保存分组定义和汇总指标；true 额外保存曲线、动作、成交和换手明细。
+  save_backtest_details: false
 
-# 日频市场面板的数据范围、缓存位置和来源。
+# 本机 Wind Parquet 缓存和真实研究区间。
 market_data:
-  # 示例使用仓库内置 synthetic 数据；生产运行时替换为真实数据根目录。
-  source_root: ../examples/data
-  # 市场面板缓存写入该目录下以主配置文件名命名的子目录。
+  # 目录下需要包含 raw/csi1800_2010 和 raw/csi800_2010。
+  source_root: /Users/qiye/Desktop/wind_cache
+  # 标准 CSV 入口使用该缓存目录；Wind 专用入口直接读取 source_root。
   cache_root: ../data
   # 数据范围需要覆盖因子预热期、评价期和回测期。
   start_date: "2024-01-02"
-  end_date: "2024-06-28"
+  end_date: "2026-09-09"
   # 定义交易日历和回测基准，且必须包含在 index_price.codes 中。
   benchmark_index: 000906.SH
-  # 市场面板需要保存的历史指数成员集合。
   universe_indices:
     - 000906.SH
     - 000852.SH
@@ -52,34 +54,53 @@ market_data:
       fields:
         - S_DQ_ADJCLOSE
 
-# 默认按因子值等权十分组，每周五评价交易日和自然周未来收益。
+# 默认分组为等权十分组；需要自定义时增加 grouping 分区覆盖默认值。
 group_return:
-  start: "2024-02-02"
-  end: "2024-06-07"
+  # 评价区间；end 同时是未来收益实现截止日。
+  start: "2024-02-01"
+  end: "2026-09-09"
   universe_indices:
     - 000906.SH
     - 000852.SH
+  # 按锚定自然周选择评价截面。
   sampling:
-    # 休市时默认回退到前一交易日；anchor_date 固定自然周序列。
     weekday: FRI
     every_n_weeks: 1
     anchor_date: "2024-01-05"
+    # 目标星期休市时回退到同一周的前一交易日。
     holiday_policy: previous_trading_day
+  # 分组使用相对评价日滞后多少个交易日的因子值。
+  factor_lag_days: 1
+  # 未来收益起终点使用复权收盘价；还可选择 open。
+  reference_price: close
+  # 交易日周期按交易日位置确定终点。
   future_return_days:
     - 1
+  # 周周期按未来自然周的 sampling.weekday 确定终点，不换算成交易日。
   future_return_weeks:
     - 1
     - 2
     - 4
+  # 同日同组股票收益的聚合方式；可选 mean、median。
+  group_return_agg: mean
+  # 同一周期跨评价日的聚合方式；可选 mean、median。
+  time_return_agg: mean
+  # 空分组和股票数不足时记录缺失；也可设为 error。
+  empty_group_policy: nan
+  insufficient_stocks_policy: nan
+  # 参考价缺失时使用此前收盘价；error 表示直接报错。
+  missing_price_policy: previous_close
+  # previous_close 最多允许回看多少个交易日；null 表示不限制。
+  max_stale_days: null
 
-# 默认按因子值等权十分组，成交限制使用 ideal，初始建仓收费且期末不清仓。
+# 默认分组为等权十分组；需要自定义时增加 grouping 分区覆盖默认值。
 simple_backtest:
-  start: "2024-02-02"
-  end: "2024-06-21"
+  start: "2024-02-01"
+  end: "2026-09-09"
   universe_indices:
     - 000906.SH
     - 000852.SH
-  # daily 的 intervals 单位为交易日；weekly 时单位为自然周。
+  # 每 1、2、4 个自然周分别运行一条回测。
   rebalance:
     frequency: weekly
     intervals:
@@ -89,14 +110,41 @@ simple_backtest:
     weekday: FRI
     anchor_date: "2024-02-02"
     holiday_policy: previous_trading_day
-  # 调仓日使用当日因子和复权收盘价，单边交易费率为 0。
-  factor_lag_days: 0
+  # 调仓选股使用相对调仓日滞后多少个交易日的因子值。
+  factor_lag_days: 1
+  # 成交价格可选 open、close。
   trade_price: close
-  transaction_cost_rate: 0.0
-# 带现金账户的回测
+  benchmark:
+    # 可选 index_price、index_total_return。
+    source: index_price
+  # first_rebalance 等待首个计划调仓日；start 在回测首日建仓。
+  initial_entry: first_rebalance
+  # simple 回测固定要求初始归一化净值为 1。
+  initial_capital: 1.0
+  # 单边交易费率；0.001 表示千分之一。
+  transaction_cost_rate: 0.001
+  # 是否对首次建仓产生的换手收取费用。
+  charge_initial_cost: true
+  # 是否在回测末日清仓并计入换手和费用。
+  liquidate_at_end: false
+  # 分组为空时转为现金；还可选择 hold、error。
+  empty_group_policy: cash
+  # 股票数不足默认报错；还可选择 cash、hold。
+  insufficient_stocks_policy: error
+  # 成交价缺失时直接报错；也可选择 previous_close。
+  missing_price_policy: previous_close
+  # previous_close 最多允许回看多少个交易日；null 表示不限制。
+  max_stale_days: null
+  # 保存 daily、rebalance 或 both 曲线。
+  curve_frequency: both
+  execution:
+    # simple 当前只支持 ideal，即忽略停牌和涨跌停约束。
+    policy: ideal
+
+# 维护现金、持股数量和实际成交状态的账户回测。
 account_backtest:
-  start: "2024-02-02"
-  end: "2024-06-21"
+  start: "2024-02-01"
+  end: "2026-09-09"
   universe_indices:
     - 000906.SH
     - 000852.SH
@@ -109,6 +157,36 @@ account_backtest:
     weekday: FRI
     anchor_date: "2024-02-02"
     holiday_policy: previous_trading_day
-  factor_lag_days: 0
+  factor_lag_days: 1
   trade_price: close
-  transaction_cost_rate: 0.0
+  benchmark:
+    source: index_price
+  initial_entry: first_rebalance
+  # 影响成交金额，不影响归一化净值口径。
+  initial_capital: 1000000
+  transaction_cost_rate: 0.001
+  charge_initial_cost: true
+  liquidate_at_end: false
+  empty_group_policy: cash
+  insufficient_stocks_policy: error
+  missing_price_policy: previous_close
+  max_stale_days: null
+  curve_frequency: both
+  execution:
+    # tradability 模式还需配置停牌和涨跌停阻断开关。
+    policy: ideal
+
+# 两类回测共用的绩效指标口径。
+metrics:
+  # 年化无风险收益率；Sharpe 会按收益频率换算。
+  risk_free_rate: 0.0
+  # 指标使用 daily 或 rebalance 收益序列。
+  return_frequency: daily
+  # A 股日频和周频年化因子。
+  annual_trading_days: 252
+  annual_weeks: 52
+  # 年化换手是否计入首次建仓换手。
+  include_initial_turnover: true
+  # simple 使用线性年化，account 使用几何复利年化。
+  simple_annual_return: linear
+  account_annual_return: compound

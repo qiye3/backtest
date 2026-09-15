@@ -153,7 +153,7 @@ class EndToEndTests(unittest.TestCase):
                     "frequency": "daily",
                     "intervals": [1, 5],
                 }
-            config_data["metrics"] = {"return_frequency": "rebalance"}
+            config_data["metrics"]["return_frequency"] = "rebalance"
             self._write_config(config_path, config_data)
 
             stage_results = run(load_config(config_path))
@@ -216,7 +216,7 @@ class EndToEndTests(unittest.TestCase):
 
     @staticmethod
     def _test_config(output_root: Path) -> dict:
-        """基于可运行基础配置构造隔离输出的测试配置。"""
+        """把 Wind 默认配置替换为可重复的 synthetic 测试数据。"""
         config_data = yaml.safe_load(BASE_CONFIG_PATH.read_text(encoding="utf-8"))
         config_data["factors"]["config_directory"] = str(
             PROJECT_ROOT / "examples" / "config" / "base_factors"
@@ -225,6 +225,29 @@ class EndToEndTests(unittest.TestCase):
         config_data["market_data"]["source_root"] = str(
             PROJECT_ROOT / "examples" / "data"
         )
+        config_data["market_data"].update(
+            {
+                "start_date": "2024-01-02",
+                "end_date": "2024-06-28",
+            }
+        )
+        config_data["group_return"].update(
+            {
+                "start": "2024-02-02",
+                "end": "2024-06-07",
+                "factor_lag_days": 0,
+            }
+        )
+        for section_name in ["simple_backtest", "account_backtest"]:
+            config_data[section_name].update(
+                {
+                    "start": "2024-02-02",
+                    "end": "2024-06-21",
+                    "factor_lag_days": 0,
+                    "transaction_cost_rate": 0.0,
+                    "missing_price_policy": "error",
+                }
+            )
         config_data["plots"] = {
             "formats": ["png"],
             "dpi": 60,

@@ -83,54 +83,15 @@ DEFAULT_GROUPING = {
         "lag_days": 0,
     },
 }
-COMMON_BACKTEST_DEFAULTS = {
-    "grouping": DEFAULT_GROUPING,
-    "benchmark": {"source": "index_price"},
-    "initial_entry": "first_rebalance",
-    "charge_initial_cost": True,
-    "liquidate_at_end": False,
-    "empty_group_policy": "cash",
-    "insufficient_stocks_policy": "error",
-    "missing_price_policy": "error",
-    "max_stale_days": None,
-    "curve_frequency": "both",
-    "execution": {"policy": "ideal"},
-}
 CONFIG_DEFAULTS = {
-    "run": {
-        "max_workers": 4,
-        "refresh_market_data": False,
-    },
-    "output": {"save_backtest_details": False},
     "group_return": {
         "grouping": deepcopy(DEFAULT_GROUPING),
-        "factor_lag_days": 0,
-        "reference_price": "close",
-        "future_return_days": [],
-        "future_return_weeks": [],
-        "group_return_agg": "mean",
-        "time_return_agg": "mean",
-        "empty_group_policy": "nan",
-        "insufficient_stocks_policy": "nan",
-        "missing_price_policy": "previous_close",
-        "max_stale_days": None,
     },
     "simple_backtest": {
-        **deepcopy(COMMON_BACKTEST_DEFAULTS),
-        "initial_capital": 1.0,
+        "grouping": deepcopy(DEFAULT_GROUPING),
     },
     "account_backtest": {
-        **deepcopy(COMMON_BACKTEST_DEFAULTS),
-        "initial_capital": 1_000_000,
-    },
-    "metrics": {
-        "risk_free_rate": 0.0,
-        "return_frequency": "daily",
-        "annual_trading_days": 252,
-        "annual_weeks": 52,
-        "include_initial_turnover": True,
-        "simple_annual_return": "linear",
-        "account_annual_return": "compound",
+        "grouping": deepcopy(DEFAULT_GROUPING),
     },
     "plots": {
         "formats": ["png"],
@@ -250,7 +211,7 @@ def load_config(config_path: str | Path) -> RunConfig:
 def _merge_config_defaults(
     configured_values: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """递归合并代码默认值，使 YAML 只需保留有意覆盖的研究设置。"""
+    """递归合并默认分组和绘图展示设置。"""
     merged_config = deepcopy(CONFIG_DEFAULTS)
     pending_sections = [(merged_config, configured_values)]
     while pending_sections:
