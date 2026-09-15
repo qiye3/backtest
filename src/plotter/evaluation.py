@@ -9,7 +9,7 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.ticker import PercentFormatter
+from matplotlib.ticker import FuncFormatter
 
 from src.plotter.style import (
     group_colors,
@@ -88,7 +88,9 @@ def plot_evaluation(
             horizontalalignment="right" if rotate_labels else "center",
             fontsize=8,
         )
-        bar_axis.yaxis.set_major_formatter(PercentFormatter(1))
+        bar_axis.yaxis.set_major_formatter(
+            FuncFormatter(lambda value, _: f"{value * 10_000:g}bp")
+        )
         bar_axis.axhline(0, color="#555555", linewidth=0.7)
         bar_axis.set_title(
             f"{horizon_label} | groups: "
@@ -96,7 +98,7 @@ def plot_evaluation(
             f"{group_observations['time_return_agg'].iloc[0]}",
             fontsize=10,
         )
-        bar_axis.set_ylabel("Aggregated forward return")
+        bar_axis.set_ylabel("Aggregated forward return (bp)")
         for group_position in np.flatnonzero(
             group_observations["group_return"].isna().to_numpy()
         ):
@@ -118,7 +120,7 @@ def plot_evaluation(
                 bar_axis.text(
                     bar.get_x() + bar.get_width() / 2,
                     value + label_offset,
-                    f"{value:.2%}",
+                    f"{value * 10_000:.2f}bp",
                     horizontalalignment="center",
                     verticalalignment="bottom",
                     fontsize=7,
