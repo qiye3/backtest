@@ -131,6 +131,7 @@ def plot_evaluation(
                     verticalalignment="bottom",
                     fontsize=7,
                 )
+        bar_axis.margins(y=0.18)
 
         ic_horizon_mask = (
             (ic_series["horizon_value"] == horizon.horizon_value)
@@ -215,6 +216,12 @@ def _plot_monthly_rank_ic(
         label="Cumulative RankIC",
     )[0]
     cumulative_axis.set_ylabel("Cumulative RankIC")
+    cumulative_axis.axhline(
+        0,
+        color="#777777",
+        linewidth=0.8,
+        linestyle="--",
+    )
     cumulative_axis.grid(False)
     cumulative_axis.spines["top"].set_visible(False)
     axis.legend(

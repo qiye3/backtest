@@ -11,13 +11,14 @@ import matplotlib
 import numpy as np
 import pandas as pd
 import yaml
+from matplotlib.figure import Figure
 
 from src.backtest.io import load_backtest_results, save_backtest_results
 from src.cli import run
 from src.config import load_config
 from src.data.market_data import MarketData
 from src.group_return.evaluator import _prepare_return_horizons, evaluate
-from src.plotter.evaluation import _monthly_rank_ic
+from src.plotter.evaluation import _monthly_rank_ic, _plot_monthly_rank_ic
 
 matplotlib.use("Agg")
 
@@ -118,6 +119,24 @@ class EndToEndTests(unittest.TestCase):
         )
         self.assertEqual(monthly_rank_ic.index.astype(str).tolist(), ["2024-01", "2024-02"])
         np.testing.assert_allclose(monthly_rank_ic.to_numpy(), [0.2, -0.2])
+
+        figure = Figure()
+        axis = figure.subplots()
+        horizon_ic = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2024-01-05", "2024-02-02"]),
+                "rank_ic": [0.2, -0.2],
+            }
+        )
+        _plot_monthly_rank_ic(axis, horizon_ic, "1 week")
+        cumulative_axis = figure.axes[1]
+        zero_lines = [
+            line
+            for line in cumulative_axis.lines
+            if line.get_linestyle() == "--"
+        ]
+        self.assertEqual(len(zero_lines), 1)
+        np.testing.assert_allclose(zero_lines[0].get_ydata(), [0.0, 0.0])
 
     def test_full_run_cache_reuse_and_plotter_restore(self) -> None:
         """运行完整链路，并在断开原始数据后复用两类缓存。"""
