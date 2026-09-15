@@ -1,8 +1,9 @@
-"""读取主 YAML，并按启用阶段校验完整显式配置。"""
+"""读取主 YAML，补全代码默认值并校验启用阶段的配置。"""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from numbers import Real
 from pathlib import Path
@@ -48,6 +49,136 @@ PLOT_METRICS = {
     "tracking_error",
     "information_ratio",
 }
+DEFAULT_QUANTILE_EDGES = [
+    [0.0, 0.1],
+    [0.1, 0.2],
+    [0.2, 0.3],
+    [0.3, 0.4],
+    [0.4, 0.5],
+    [0.5, 0.6],
+    [0.6, 0.7],
+    [0.7, 0.8],
+    [0.8, 0.9],
+    [0.9, 1.0],
+]
+DEFAULT_GROUP_COLORS = [
+    "#006837",
+    "#1A9850",
+    "#66BD63",
+    "#A6D96A",
+    "#D9EF8B",
+    "#FEE08B",
+    "#FDAE61",
+    "#F46D43",
+    "#D73027",
+    "#A50026",
+]
+DEFAULT_GROUPING = {
+    "quantile_edges": DEFAULT_QUANTILE_EDGES,
+    "min_stocks": 20,
+    "missing_factor_policy": "exclude",
+    "weighting": {
+        "method": "equal",
+        "field": None,
+        "lag_days": 0,
+    },
+}
+COMMON_BACKTEST_DEFAULTS = {
+    "grouping": DEFAULT_GROUPING,
+    "benchmark": {"source": "index_price"},
+    "initial_entry": "first_rebalance",
+    "charge_initial_cost": True,
+    "liquidate_at_end": False,
+    "empty_group_policy": "cash",
+    "insufficient_stocks_policy": "error",
+    "missing_price_policy": "error",
+    "max_stale_days": None,
+    "curve_frequency": "both",
+    "execution": {"policy": "ideal"},
+}
+CONFIG_DEFAULTS = {
+    "run": {
+        "max_workers": 4,
+        "refresh_market_data": False,
+    },
+    "output": {"save_backtest_details": False},
+    "group_return": {
+        "grouping": deepcopy(DEFAULT_GROUPING),
+        "factor_lag_days": 0,
+        "reference_price": "close",
+        "future_return_days": [],
+        "future_return_weeks": [],
+        "group_return_agg": "mean",
+        "time_return_agg": "mean",
+        "empty_group_policy": "nan",
+        "insufficient_stocks_policy": "nan",
+        "missing_price_policy": "previous_close",
+        "max_stale_days": None,
+    },
+    "simple_backtest": {
+        **deepcopy(COMMON_BACKTEST_DEFAULTS),
+        "initial_capital": 1.0,
+    },
+    "account_backtest": {
+        **deepcopy(COMMON_BACKTEST_DEFAULTS),
+        "initial_capital": 1_000_000,
+    },
+    "metrics": {
+        "risk_free_rate": 0.0,
+        "return_frequency": "daily",
+        "annual_trading_days": 252,
+        "annual_weeks": 52,
+        "include_initial_turnover": True,
+        "simple_annual_return": "linear",
+        "account_annual_return": "compound",
+    },
+    "plots": {
+        "formats": ["png"],
+        "dpi": 100,
+        "width": 13.0,
+        "row_height": 3.4,
+        "font_family": "DejaVu Sans",
+        "curve_frequency": "daily",
+        "missing_results": "error",
+        "note": "",
+        "legend_columns": 4,
+        "distribution": {
+            "enabled": True,
+            "bins": 60,
+            "density": True,
+            "kde": True,
+            "clip_quantiles": None,
+            "max_points": 100_000,
+        },
+        "evaluation": {
+            "enabled": True,
+            "group_panel": "left",
+            "group_colors": list(DEFAULT_GROUP_COLORS),
+            "ic_color": "#D06A2D",
+            "rank_ic_color": "#174A73",
+        },
+        "simple": {
+            "enabled": True,
+            "layout": "rows",
+            "group_colors": list(DEFAULT_GROUP_COLORS),
+            "benchmark_color": "#777777",
+            "summary_quantile": [0.9, 1.0],
+            "metric_columns": [
+                "annual_return",
+                "annual_volatility",
+                "sharpe",
+                "max_drawdown",
+                "annual_turnover",
+            ],
+        },
+        "account": {
+            "enabled": True,
+            "layout": "rows",
+            "group_colors": list(DEFAULT_GROUP_COLORS),
+            "benchmark_color": "#777777",
+        },
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -63,8 +194,11 @@ class RunConfig:
 def load_config(config_path: str | Path) -> RunConfig:
     """读取主 YAML，并只校验配置中已经启用的运行阶段。"""
     resolved_path = Path(config_path).expanduser().resolve()
-    raw_config = yaml.safe_load(resolved_path.read_text(encoding="utf-8"))
-    _check_keys(raw_config, {"run", "output"}, ROOT_KEYS, "root")
+    configured_values = yaml.safe_load(
+        resolved_path.read_text(encoding="utf-8")
+    )
+    _check_keys(configured_values, {"run", "output"}, ROOT_KEYS, "root")
+    raw_config = _merge_config_defaults(configured_values)
     _validate_run(raw_config["run"])
     _check_keys(
         raw_config["output"],
@@ -113,6 +247,23 @@ def load_config(config_path: str | Path) -> RunConfig:
     )
 
 
+def _merge_config_defaults(
+    configured_values: Mapping[str, Any],
+) -> dict[str, Any]:
+    """递归合并代码默认值，使 YAML 只需保留有意覆盖的研究设置。"""
+    merged_config = deepcopy(CONFIG_DEFAULTS)
+    pending_sections = [(merged_config, configured_values)]
+    while pending_sections:
+        target_section, configured_section = pending_sections.pop()
+        for key, value in configured_section.items():
+            default_value = target_section.get(key)
+            if isinstance(default_value, dict) and isinstance(value, Mapping):
+                pending_sections.append((default_value, value))
+            else:
+                target_section[key] = deepcopy(value)
+    return merged_config
+
+
 def _validate_run(settings: Mapping[str, Any]) -> None:
     """校验阶段开关、线程数和市场缓存刷新设置。"""
     _check_keys(settings, RUN_KEYS, RUN_KEYS, "run")
@@ -135,6 +286,7 @@ def _validate_group_return(settings: Mapping[str, Any]) -> None:
         "factor_lag_days",
         "reference_price",
         "future_return_days",
+        "future_return_weeks",
         "group_return_agg",
         "time_return_agg",
         "empty_group_policy",
@@ -154,10 +306,7 @@ def _validate_group_return(settings: Mapping[str, Any]) -> None:
         settings["factor_lag_days"],
         "group_return.factor_lag_days",
     )
-    _positive_integer_list(
-        settings["future_return_days"],
-        "group_return.future_return_days",
-    )
+    _validate_future_return_periods(settings)
     choices = {
         "reference_price": {"open", "close"},
         "group_return_agg": {"mean", "median"},
@@ -585,6 +734,24 @@ def _positive_integer_list(value: Any, location: str) -> None:
         raise ValueError(f"{location} 必须是非空且不重复的列表")
     for item in value:
         _positive_integer(item, location)
+
+
+def _validate_future_return_periods(settings: Mapping[str, Any]) -> None:
+    """校验日、周未来收益周期，至少要求配置一种周期。"""
+    future_return_days = settings["future_return_days"]
+    future_return_weeks = settings["future_return_weeks"]
+    for field_name, periods in [
+        ("future_return_days", future_return_days),
+        ("future_return_weeks", future_return_weeks),
+    ]:
+        location = f"group_return.{field_name}"
+        if not isinstance(periods, list) or len(periods) != len(set(periods)):
+            raise ValueError(f"{location} 必须是不重复的列表")
+        for period in periods:
+            _positive_integer(period, location)
+
+    if not future_return_days and not future_return_weeks:
+        raise ValueError("group_return 至少需要一个未来收益周期")
 
 
 def _quantile_pair(value: Any, location: str) -> None:

@@ -14,6 +14,7 @@ import yaml
 from src.backtest.io import load_backtest_results, save_backtest_results
 from src.cli import run
 from src.config import load_config
+from src.group_return.evaluator import _prepare_return_horizons
 
 matplotlib.use("Agg")
 
@@ -37,6 +38,34 @@ FIGURE_FILES = {
 class EndToEndTests(unittest.TestCase):
     """验证全阶段、日度调仓、市场缓存和 plotter-only 恢复。"""
 
+    def test_week_horizon_uses_calendar_week(self) -> None:
+        """周周期按目标自然周回退，不等同于五个交易日。"""
+        calendar = pd.bdate_range("2024-02-01", "2024-02-16").difference(
+            pd.DatetimeIndex(["2024-02-09"])
+        )
+        sample_dates = pd.DatetimeIndex(["2024-02-02"])
+        sample_positions = calendar.get_indexer(sample_dates)
+        horizon_values, horizon_units, end_positions = _prepare_return_horizons(
+            calendar=calendar,
+            sample_dates=sample_dates,
+            sample_positions=sample_positions,
+            settings={
+                "future_return_days": [5],
+                "future_return_weeks": [1],
+                "sampling": {
+                    "weekday": "FRI",
+                    "holiday_policy": "previous_trading_day",
+                },
+            },
+        )
+
+        self.assertEqual(horizon_values.tolist(), [5, 1])
+        self.assertEqual(horizon_units.tolist(), ["trading_days", "weeks"])
+        self.assertEqual(
+            calendar[end_positions[:, 0]].tolist(),
+            [pd.Timestamp("2024-02-12"), pd.Timestamp("2024-02-08")],
+        )
+
     def test_full_run_cache_reuse_and_plotter_restore(self) -> None:
         """运行完整链路，并在断开原始数据后复用两类缓存。"""
         with TemporaryDirectory() as temporary_directory:
@@ -50,6 +79,20 @@ class EndToEndTests(unittest.TestCase):
             config_data["output"]["save_backtest_details"] = True
             self._write_config(config_path, config_data)
             full_results = run(load_config(config_path))
+            evaluation = full_results["group_return"]["return_10d"]
+            self.assertEqual(
+                list(
+                    evaluation["summary"][["horizon_value", "horizon_unit"]]
+                    .drop_duplicates()
+                    .itertuples(index=False, name=None)
+                ),
+                [
+                    (1, "trading_days"),
+                    (1, "weeks"),
+                    (2, "weeks"),
+                    (4, "weeks"),
+                ],
+            )
             self.assertEqual(
                 list(full_results),
                 [
@@ -110,7 +153,7 @@ class EndToEndTests(unittest.TestCase):
                     "frequency": "daily",
                     "intervals": [1, 5],
                 }
-            config_data["metrics"]["return_frequency"] = "rebalance"
+            config_data["metrics"] = {"return_frequency": "rebalance"}
             self._write_config(config_path, config_data)
 
             stage_results = run(load_config(config_path))
@@ -182,8 +225,10 @@ class EndToEndTests(unittest.TestCase):
         config_data["market_data"]["source_root"] = str(
             PROJECT_ROOT / "examples" / "data"
         )
-        config_data["plots"]["formats"] = ["png"]
-        config_data["plots"]["dpi"] = 60
+        config_data["plots"] = {
+            "formats": ["png"],
+            "dpi": 60,
+        }
         return config_data
 
     @staticmethod

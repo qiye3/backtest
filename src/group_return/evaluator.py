@@ -41,7 +41,8 @@ class _EvaluationContext:
     membership: pd.DataFrame
     group_definitions: pd.DataFrame
     weight_values: pd.DataFrame | None
-    future_return_days: np.ndarray
+    horizon_values: np.ndarray
+    horizon_units: np.ndarray
     return_end_positions: np.ndarray
     return_end_dates: np.ndarray
     horizon_complete: np.ndarray
@@ -120,6 +121,87 @@ def _sample_dates(
             selected_dates.append(selected_date)
 
     return pd.DatetimeIndex(selected_dates, name="date")
+
+
+def _prepare_return_horizons(
+    calendar: pd.DatetimeIndex,
+    sample_dates: pd.DatetimeIndex,
+    sample_positions: np.ndarray,
+    settings: Mapping[str, Any],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """按交易日位移和自然周目标日分别计算未来收益端点。"""
+    future_return_days = np.asarray(settings["future_return_days"], dtype=int)
+    future_return_weeks = np.asarray(settings["future_return_weeks"], dtype=int)
+    day_end_positions = (
+        sample_positions[None, :] + future_return_days[:, None]
+    )
+
+    week_end_positions = np.empty(
+        (len(future_return_weeks), len(sample_dates)),
+        dtype=int,
+    )
+    if len(future_return_weeks):
+        sample_week_starts = sample_dates - pd.to_timedelta(
+            sample_dates.weekday,
+            unit="D",
+        )
+        target_week_starts = (
+            sample_week_starts.to_numpy()[None, :]
+            + future_return_weeks[:, None] * np.timedelta64(7, "D")
+        )
+        target_dates = target_week_starts + np.timedelta64(
+            WEEKDAY_NUMBER[settings["sampling"]["weekday"]],
+            "D",
+        )
+        exact_positions = calendar.get_indexer(target_dates.reshape(-1)).reshape(
+            target_dates.shape
+        )
+        if settings["sampling"]["holiday_policy"] == "skip":
+            week_end_positions = exact_positions
+        else:
+            previous_positions = calendar.searchsorted(
+                target_dates.reshape(-1),
+                side="left",
+            ).reshape(target_dates.shape) - 1
+            safe_previous_positions = np.maximum(previous_positions, 0)
+            previous_dates = calendar.to_numpy()[safe_previous_positions]
+            valid_previous_dates = (
+                (previous_positions >= 0)
+                & (previous_dates >= target_week_starts)
+            )
+            fallback_positions = np.where(
+                valid_previous_dates,
+                previous_positions,
+                -1,
+            )
+            week_end_positions = np.where(
+                exact_positions >= 0,
+                exact_positions,
+                fallback_positions,
+            )
+
+    horizon_values = np.concatenate(
+        [future_return_days, future_return_weeks]
+    )
+    horizon_units = np.asarray(
+        ["trading_days"] * len(future_return_days)
+        + ["weeks"] * len(future_return_weeks),
+        dtype=object,
+    )
+    return (
+        horizon_values,
+        horizon_units,
+        np.concatenate([day_end_positions, week_end_positions]),
+    )
+
+
+def _horizon_label(context: _EvaluationContext, position: int) -> str:
+    """生成人类可读且不混淆交易日与自然周的周期标签。"""
+    unit = {
+        "trading_days": "个交易日",
+        "weeks": "周",
+    }[context.horizon_units[position]]
+    return f"{context.horizon_values[position]}{unit}"
 
 
 # 根据交易日位置批量取得因子或权重字段的滞后截面。
@@ -306,10 +388,18 @@ def _prepare_context(
             weighting["lag_days"],
         )
 
-    future_return_days = np.asarray(settings["future_return_days"], dtype=int)
-    return_end_positions = sample_positions[None, :] + future_return_days[:, None]
-    positions_in_calendar = return_end_positions < len(calendar)
-    safe_end_positions = np.minimum(return_end_positions, len(calendar) - 1)
+    horizon_values, horizon_units, return_end_positions = (
+        _prepare_return_horizons(
+            calendar=calendar,
+            sample_dates=sample_dates,
+            sample_positions=sample_positions,
+            settings=settings,
+        )
+    )
+    positions_in_calendar = (
+        (return_end_positions >= 0) & (return_end_positions < len(calendar))
+    )
+    safe_end_positions = np.clip(return_end_positions, 0, len(calendar) - 1)
     candidate_end_dates = calendar.to_numpy()[safe_end_positions]
     horizon_complete = positions_in_calendar & (
         candidate_end_dates <= np.datetime64(pd.Timestamp(settings["end"]))
@@ -336,7 +426,8 @@ def _prepare_context(
         membership=membership,
         group_definitions=group_definitions,
         weight_values=weight_values,
-        future_return_days=future_return_days,
+        horizon_values=horizon_values,
+        horizon_units=horizon_units,
         return_end_positions=return_end_positions,
         return_end_dates=return_end_dates,
         horizon_complete=horizon_complete,
@@ -467,7 +558,7 @@ def _prepare_future_return_matrices(
         raise ValueError(
             "未来收益缺少参考价格: "
             f"{context.sample_dates[date_position].date()} "
-            f"{context.future_return_days[horizon_position]}日 "
+            f"{_horizon_label(context, horizon_position)} "
             f"{context.stock_codes[stock_position]}"
         )
 
@@ -511,7 +602,7 @@ def _calculate_group_return_matrices(
     功能和用途：
     - 均值路径使用 ``einsum``，中位数路径只循环少量周期和分组。
     """
-    horizon_count = len(context.future_return_days)
+    horizon_count = len(context.horizon_values)
     group_count = len(context.group_definitions)
     date_count = len(context.sample_dates)
     group_sizes = group_membership.sum(axis=2)
@@ -526,7 +617,7 @@ def _calculate_group_return_matrices(
         raise ValueError(
             "评价分组为空: "
             f"{context.sample_dates[date_position].date()} "
-            f"{context.future_return_days[horizon_position]}日 "
+            f"{_horizon_label(context, horizon_position)} "
             f"{context.group_definitions.iloc[group_position]['group_id']}"
         )
 
@@ -662,12 +753,13 @@ def summarize_evaluation(
     - 相邻未来收益可以重叠，汇总仅作为描述统计。
     """
     ic_summary_records = []
-    for horizon_days, observations in ic_series.groupby(
-        "horizon_days",
+    for (horizon_value, horizon_unit), observations in ic_series.groupby(
+        ["horizon_value", "horizon_unit"],
         sort=False,
     ):
         summary_record = {
-            "horizon_days": horizon_days,
+            "horizon_value": horizon_value,
+            "horizon_unit": horizon_unit,
             "start": settings["start"],
             "end": settings["end"],
             "ic_scope": "full_universe",
@@ -689,8 +781,8 @@ def summarize_evaluation(
         ic_summary_records.append(summary_record)
 
     group_summary_records = []
-    for (horizon_days, group_id), observations in detail.groupby(
-        ["horizon_days", "group_id"],
+    for (horizon_value, horizon_unit, group_id), observations in detail.groupby(
+        ["horizon_value", "horizon_unit", "group_id"],
         sort=False,
     ):
         first_observation = observations.iloc[0]
@@ -701,7 +793,8 @@ def summarize_evaluation(
             aggregated_return = valid_returns.median()
         group_summary_records.append(
             {
-                "horizon_days": horizon_days,
+                "horizon_value": horizon_value,
+                "horizon_unit": horizon_unit,
                 "group_id": group_id,
                 "quantile_lower": first_observation["quantile_lower"],
                 "quantile_upper": first_observation["quantile_upper"],
@@ -782,7 +875,7 @@ def _evaluate_factor(
         context=context,
     )
 
-    horizon_count = len(context.future_return_days)
+    horizon_count = len(context.horizon_values)
     date_count = len(context.sample_dates)
     stock_count = len(context.stock_codes)
     repeated_factors = np.broadcast_to(
@@ -885,7 +978,7 @@ def _build_detail_table(
 ) -> pd.DataFrame:
     """把评价矩阵展开为日期乘未来周期乘分组明细。"""
     date_count = len(context.sample_dates)
-    horizon_count = len(context.future_return_days)
+    horizon_count = len(context.horizon_values)
     group_count = len(context.group_definitions)
     detail_size = date_count * horizon_count * group_count
     definitions = context.group_definitions
@@ -901,8 +994,12 @@ def _build_detail_table(
                 context.return_end_dates.T.reshape(-1),
                 group_count,
             ),
-            "horizon_days": np.tile(
-                np.repeat(context.future_return_days, group_count),
+            "horizon_value": np.tile(
+                np.repeat(context.horizon_values, group_count),
+                date_count,
+            ),
+            "horizon_unit": np.tile(
+                np.repeat(context.horizon_units, group_count),
                 date_count,
             ),
             "n_stocks": np.repeat(stock_counts, horizon_count * group_count),
@@ -942,7 +1039,7 @@ def _build_ic_table(
 ) -> pd.DataFrame:
     """把相关系数矩阵展开为日期乘未来周期序列。"""
     date_count = len(context.sample_dates)
-    horizon_count = len(context.future_return_days)
+    horizon_count = len(context.horizon_values)
     complete_stock_counts = np.where(
         completed_evaluations,
         stock_counts[None, :],
@@ -956,7 +1053,8 @@ def _build_ic_table(
             "date": np.repeat(context.sample_dates.to_numpy(), horizon_count),
             "factor_date": np.repeat(context.factor_dates.to_numpy(), horizon_count),
             "return_end_date": context.return_end_dates.T.reshape(-1),
-            "horizon_days": np.tile(context.future_return_days, date_count),
+            "horizon_value": np.tile(context.horizon_values, date_count),
+            "horizon_unit": np.tile(context.horizon_units, date_count),
             "n_stocks": np.repeat(stock_counts, horizon_count),
             "status": ic_status.T.reshape(-1),
             "ic": ic_values.T.reshape(-1),
@@ -1004,7 +1102,8 @@ def _build_labels(
         {
             "date": context.sample_dates.to_numpy()[date_positions],
             "code": context.stock_codes.to_numpy()[stock_positions],
-            "horizon_days": context.future_return_days[horizon_positions],
+            "horizon_value": context.horizon_values[horizon_positions],
+            "horizon_unit": context.horizon_units[horizon_positions],
             "return_end_date": context.return_end_dates[
                 horizon_positions,
                 date_positions,
