@@ -18,6 +18,7 @@ from src.backtest.io import (
 )
 from src.config import RunConfig, load_config, save_config_snapshot
 from src.data.market_data import MarketData
+from src.data.return_data import load_return_panel
 from src.factors import calc_factors, load_factors
 from src.factors.io import (
     FACTOR_FILE_NAME,
@@ -27,10 +28,13 @@ from src.factors.io import (
 from src.group_return import evaluate_factors
 from src.group_return.io import (
     RESULT_FILE_NAME as GROUP_RETURN_FILE_NAME,
+)
+from src.group_return.io import (
     load_evaluation_results,
     save_evaluation_results,
 )
-from src.plotter import plot_factors
+from src.overall_evaluation import evaluate_overall
+from src.plotter import plot_factors, plot_overall_evaluation
 
 
 def run(config: RunConfig) -> dict[str, Any]:
@@ -39,6 +43,12 @@ def run(config: RunConfig) -> dict[str, Any]:
     run_settings = config.raw["run"]
     stage_results: dict[str, Any] = {}
     market_data = _load_market_data(config)
+    needs_external_returns = run_settings["group_return"] or run_settings[
+        "simple_backtest"
+    ]
+    external_return_panel = None
+    if config.external_return_path is not None and needs_external_returns:
+        external_return_panel = load_return_panel(config.external_return_path)
     factor_panels = _calculate_factors(config, market_data)
     if factor_panels is not None:
         stage_results["factors"] = factor_panels
@@ -49,6 +59,7 @@ def run(config: RunConfig) -> dict[str, Any]:
             "simple_backtest",
             "account_backtest",
             "plotter",
+            "overall_evaluation",
         ]
     ):
         factor_panels = load_factor_panels(config.output_root)
@@ -57,6 +68,7 @@ def run(config: RunConfig) -> dict[str, Any]:
         config,
         factor_panels,
         market_data,
+        external_return_panel,
     )
     if group_return_results is not None:
         stage_results["group_return"] = group_return_results
@@ -65,6 +77,7 @@ def run(config: RunConfig) -> dict[str, Any]:
         factor_panels,
         market_data,
         "simple",
+        external_return_panel,
     )
     if simple_backtest_results is not None:
         stage_results["simple_backtest"] = simple_backtest_results
@@ -73,6 +86,7 @@ def run(config: RunConfig) -> dict[str, Any]:
         factor_panels,
         market_data,
         "account",
+        None,
     )
     if account_backtest_results is not None:
         stage_results["account_backtest"] = account_backtest_results
@@ -114,13 +128,36 @@ def run(config: RunConfig) -> dict[str, Any]:
             group_return_results=group_return_results,
             simple_backtest_results=simple_backtest_results,
             account_backtest_results=account_backtest_results,
-            evaluation_settings=config.raw["group_return"],
+            evaluation_settings={
+                **config.raw["group_return"],
+                "return_source": (
+                    "external_return"
+                    if config.external_return_path is not None
+                    else "market_price"
+                ),
+            },
             backtest_settings={
-                "simple": config.raw["simple_backtest"],
+                "simple": {
+                    **config.raw["simple_backtest"],
+                    "return_source": (
+                        "external_return"
+                        if config.external_return_path is not None
+                        else "market_price"
+                    ),
+                },
                 "account": config.raw["account_backtest"],
             },
         )
         stage_results["plotter"] = plot_paths
+
+    overall_result = _run_overall_evaluation(
+        config=config,
+        factor_panels=factor_panels,
+        market_data=market_data,
+        group_return_results=group_return_results,
+    )
+    if overall_result is not None:
+        stage_results["overall_evaluation"] = overall_result
     return stage_results
 
 
@@ -134,6 +171,7 @@ def _load_market_data(config: RunConfig) -> MarketData | None:
             "group_return",
             "simple_backtest",
             "account_backtest",
+            "overall_evaluation",
         ]
     )
     if not calculation_enabled:
@@ -172,6 +210,7 @@ def _run_group_return(
     config: RunConfig,
     factor_panels: dict[str, pd.DataFrame] | None,
     market_data: MarketData | None,
+    return_panel: pd.DataFrame | None,
 ) -> dict[str, dict[str, Any]] | None:
     """运行启用的评价阶段并按输出开关处理 Parquet。"""
     if not config.raw["run"]["group_return"]:
@@ -181,6 +220,7 @@ def _run_group_return(
         market_data=market_data,
         settings=config.raw["group_return"],
         max_workers=config.raw["run"]["max_workers"],
+        return_panel=return_panel,
     )
     if config.raw["output"]["save_parquet"]["group_return"]:
         save_evaluation_results(results, config.output_root)
@@ -198,6 +238,7 @@ def _run_backtest(
     factor_panels: dict[str, pd.DataFrame] | None,
     market_data: MarketData | None,
     mode: str,
+    return_panel: pd.DataFrame | None,
 ) -> dict[str, dict[str, Any]] | None:
     """运行启用的一类回测并按输出开关处理 Parquet。"""
     section_name = f"{mode}_backtest"
@@ -210,6 +251,7 @@ def _run_backtest(
         metrics_settings=config.raw["metrics"],
         mode=mode,
         max_workers=config.raw["run"]["max_workers"],
+        return_panel=return_panel,
     )
     if config.raw["output"]["save_parquet"][section_name]:
         save_backtest_results(
@@ -225,6 +267,35 @@ def _run_backtest(
             RESULT_FILE_NAMES[mode],
         )
     return results
+
+
+def _run_overall_evaluation(
+    config: RunConfig,
+    factor_panels: dict[str, pd.DataFrame],
+    market_data: MarketData,
+    group_return_results: dict[str, dict[str, Any]] | None,
+) -> dict[str, pd.DataFrame] | None:
+    """计算一批因子的整体统计并输出三张根目录图。"""
+    if not config.raw["run"]["overall_evaluation"]:
+        return None
+    if group_return_results is None:
+        group_return_results = load_evaluation_results(
+            factor_panels,
+            config.output_root,
+        )
+    overall_result = evaluate_overall(
+        factor_panels=factor_panels,
+        evaluation_results=group_return_results,
+        market_data=market_data,
+        evaluation_settings=config.raw["group_return"],
+        max_workers=config.raw["run"]["max_workers"],
+    )
+    plot_overall_evaluation(
+        overall_result=overall_result,
+        settings=config.raw["plots"],
+        output_directory=config.output_root / "overall",
+    )
+    return overall_result
 
 
 def _remove_factor_parquets(

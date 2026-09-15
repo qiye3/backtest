@@ -46,9 +46,11 @@ class _EvaluationContext:
     return_end_positions: np.ndarray
     return_end_dates: np.ndarray
     horizon_complete: np.ndarray
-    reference_prices: pd.DataFrame
-    price_filled: pd.DataFrame
-    price_positions: np.ndarray
+    reference_prices: pd.DataFrame | None
+    price_filled: pd.DataFrame | None
+    price_positions: np.ndarray | None
+    external_future_returns: np.ndarray | None
+    benchmark_returns: np.ndarray | None
 
 
 @dataclass(frozen=True)
@@ -195,6 +197,68 @@ def _prepare_return_horizons(
     )
 
 
+def _compound_external_returns(
+    return_panel: pd.DataFrame,
+    calendar: pd.DatetimeIndex,
+    stock_codes: pd.Index,
+    sample_positions: np.ndarray,
+    return_end_positions: np.ndarray,
+) -> np.ndarray:
+    """按 t-1 收盘到 t 收盘口径批量复合各评价区间的日收益。"""
+    aligned_returns = return_panel.reindex(
+        index=calendar,
+        columns=stock_codes,
+    ).to_numpy(dtype=float)
+    valid_returns = np.isfinite(aligned_returns)
+    cumulative_log_returns = np.cumsum(
+        np.where(valid_returns, np.log1p(aligned_returns), 0.0),
+        axis=0,
+    )
+    cumulative_missing_counts = np.cumsum(~valid_returns, axis=0)
+    safe_end_positions = np.clip(return_end_positions, 0, len(calendar) - 1)
+    interval_log_returns = (
+        cumulative_log_returns[safe_end_positions]
+        - cumulative_log_returns[sample_positions][None, :, :]
+    )
+    interval_missing_counts = (
+        cumulative_missing_counts[safe_end_positions]
+        - cumulative_missing_counts[sample_positions][None, :, :]
+    )
+    compounded_returns = np.expm1(interval_log_returns)
+    return np.where(interval_missing_counts == 0, compounded_returns, np.nan)
+
+
+def _benchmark_horizon_returns(
+    market_data: MarketData,
+    benchmark_source: str,
+    sample_positions: np.ndarray,
+    return_end_positions: np.ndarray,
+    horizon_complete: np.ndarray,
+) -> np.ndarray:
+    """按评价起终点计算配置基准的同期收益。"""
+    benchmark_prices = market_data.get_panel(
+        benchmark_source,
+        "S_DQ_CLOSE",
+    )[market_data.benchmark_index].reindex(market_data.calendar).to_numpy(dtype=float)
+    safe_end_positions = np.clip(
+        return_end_positions,
+        0,
+        len(market_data.calendar) - 1,
+    )
+    start_prices = benchmark_prices[sample_positions]
+    end_prices = benchmark_prices[safe_end_positions]
+    benchmark_returns = end_prices / start_prices[None, :] - 1.0
+    missing_benchmark = horizon_complete & ~np.isfinite(benchmark_returns)
+    if missing_benchmark.any():
+        horizon_position, date_position = np.argwhere(missing_benchmark)[0]
+        evaluation_date = market_data.calendar[sample_positions[date_position]]
+        raise ValueError(
+            "评价目标缺少基准收益: "
+            f"{evaluation_date.date()} horizon={horizon_position}"
+        )
+    return benchmark_returns
+
+
 def _horizon_label(context: _EvaluationContext, position: int) -> str:
     """生成人类可读且不混淆交易日与自然周的周期标签。"""
     unit = {
@@ -331,6 +395,7 @@ def _prepare_reference_prices(
 def _prepare_context(
     market_data: MarketData,
     settings: Mapping[str, Any],
+    return_panel: pd.DataFrame | None = None,
 ) -> _EvaluationContext:
     """
     准备 group_return 的共享计算上下文。
@@ -407,13 +472,37 @@ def _prepare_context(
     return_end_dates = candidate_end_dates.astype("datetime64[ns]")
     return_end_dates[~positions_in_calendar] = np.datetime64("NaT")
 
-    reference_prices, price_filled, price_positions = _prepare_reference_prices(
-        market_data=market_data,
-        reference_price=settings["reference_price"],
-        missing_price_policy=settings["missing_price_policy"],
-        max_stale_days=settings["max_stale_days"],
-        stock_codes=stock_codes,
-    )
+    reference_prices = None
+    price_filled = None
+    price_positions = None
+    external_future_returns = None
+    if return_panel is None:
+        reference_prices, price_filled, price_positions = _prepare_reference_prices(
+            market_data=market_data,
+            reference_price=settings["reference_price"],
+            missing_price_policy=settings["missing_price_policy"],
+            max_stale_days=settings["max_stale_days"],
+            stock_codes=stock_codes,
+        )
+    else:
+        external_future_returns = _compound_external_returns(
+            return_panel=return_panel,
+            calendar=calendar,
+            stock_codes=stock_codes,
+            sample_positions=sample_positions,
+            return_end_positions=return_end_positions,
+        )
+
+    target_settings = settings["target"]
+    benchmark_returns = None
+    if target_settings["type"] == "benchmark_excess_return":
+        benchmark_returns = _benchmark_horizon_returns(
+            market_data=market_data,
+            benchmark_source=target_settings["benchmark_source"],
+            sample_positions=sample_positions,
+            return_end_positions=return_end_positions,
+            horizon_complete=horizon_complete,
+        )
     group_definitions = build_group_definitions(
         settings["grouping"]["quantile_edges"]
     )
@@ -434,11 +523,13 @@ def _prepare_context(
         reference_prices=reference_prices,
         price_filled=price_filled,
         price_positions=price_positions,
+        external_future_returns=external_future_returns,
+        benchmark_returns=benchmark_returns,
     )
 
 
 # 沿股票轴计算每个截面的 Pearson IC 或平均名次 RankIC。
-def _rowwise_correlation(
+def rowwise_correlation(
     factor_values: np.ndarray,
     future_returns: np.ndarray,
     rank: bool = False,
@@ -534,35 +625,50 @@ def _prepare_future_return_matrices(
     功能和用途：
     - 价格只按当期有效因子股票检查，不会反向改变股票资格或分组。
     """
-    reference_prices = context.reference_prices.to_numpy(dtype=float)
-    price_filled = context.price_filled.to_numpy(dtype=bool)
-    start_prices = reference_prices[context.sample_positions]
-    start_price_filled = price_filled[context.sample_positions]
-    safe_end_positions = np.minimum(
-        context.return_end_positions,
-        len(context.calendar) - 1,
-    )
-    end_prices = reference_prices[safe_end_positions]
-    end_price_filled = price_filled[safe_end_positions]
-
     valid_factor = np.isfinite(factor_array)
     completed_evaluations = context.horizon_complete & enough_stocks[None, :]
     required_prices = completed_evaluations[:, :, None] & valid_factor[None, :, :]
-    missing_required_prices = required_prices & (
-        ~np.isfinite(start_prices[None, :, :]) | ~np.isfinite(end_prices)
+    safe_end_positions = np.clip(
+        context.return_end_positions,
+        0,
+        len(context.calendar) - 1,
     )
-    if missing_required_prices.any():
+
+    if context.external_future_returns is None:
+        reference_prices = context.reference_prices.to_numpy(dtype=float)
+        price_filled = context.price_filled.to_numpy(dtype=bool)
+        start_prices = reference_prices[context.sample_positions]
+        start_price_filled = price_filled[context.sample_positions]
+        end_prices = reference_prices[safe_end_positions]
+        end_price_filled = price_filled[safe_end_positions]
+        source_returns = end_prices / start_prices[None, :, :] - 1.0
+        missing_required_values = required_prices & (
+            ~np.isfinite(start_prices[None, :, :]) | ~np.isfinite(end_prices)
+        )
+        missing_label = "未来收益缺少参考价格"
+    else:
+        source_returns = context.external_future_returns
+        missing_required_values = required_prices & ~np.isfinite(source_returns)
+        start_prices = np.full_like(factor_array, np.nan)
+        end_prices = np.full_like(source_returns, np.nan)
+        start_price_filled = np.zeros_like(factor_array, dtype=bool)
+        end_price_filled = np.zeros_like(source_returns, dtype=bool)
+        missing_label = "未来收益缺少外部日收益"
+
+    if missing_required_values.any():
         horizon_position, date_position, stock_position = np.argwhere(
-            missing_required_prices
+            missing_required_values
         )[0]
         raise ValueError(
-            "未来收益缺少参考价格: "
+            f"{missing_label}: "
             f"{context.sample_dates[date_position].date()} "
             f"{_horizon_label(context, horizon_position)} "
             f"{context.stock_codes[stock_position]}"
         )
 
-    future_returns = end_prices / start_prices[None, :, :] - 1.0
+    future_returns = source_returns
+    if context.benchmark_returns is not None:
+        future_returns = future_returns - context.benchmark_returns[:, :, None]
     future_returns = np.where(required_prices, future_returns, np.nan)
     combined_price_filled = start_price_filled[None, :, :] | end_price_filled
     return _FutureReturnMatrices(
@@ -886,11 +992,11 @@ def _evaluate_factor(
         horizon_count * date_count,
         stock_count,
     )
-    ic_values = _rowwise_correlation(repeated_factors, flattened_returns).reshape(
+    ic_values = rowwise_correlation(repeated_factors, flattened_returns).reshape(
         horizon_count,
         date_count,
     )
-    rank_ic_values = _rowwise_correlation(
+    rank_ic_values = rowwise_correlation(
         repeated_factors,
         flattened_returns,
         rank=True,
@@ -1088,17 +1194,7 @@ def _build_labels(
         date_positions,
     ]
     start_calendar_positions = context.sample_positions[date_positions]
-    start_actual_positions = context.price_positions[
-        start_calendar_positions,
-        stock_positions,
-    ]
-    end_actual_positions = context.price_positions[
-        end_calendar_positions,
-        stock_positions,
-    ]
-    reference_price = settings["reference_price"]
-
-    return pd.DataFrame(
+    labels = pd.DataFrame(
         {
             "date": context.sample_dates.to_numpy()[date_positions],
             "code": context.stock_codes.to_numpy()[stock_positions],
@@ -1113,30 +1209,47 @@ def _build_labels(
                 date_positions,
                 stock_positions,
             ],
-            "start_price": start_prices[date_positions, stock_positions],
-            "end_price": end_prices[
+        }
+    )
+    if context.external_future_returns is not None:
+        labels["return_source"] = "external_return"
+        return labels
+
+    reference_price = settings["reference_price"]
+    start_actual_positions = context.price_positions[
+        start_calendar_positions,
+        stock_positions,
+    ]
+    end_actual_positions = context.price_positions[
+        end_calendar_positions,
+        stock_positions,
+    ]
+    labels = labels.assign(
+        return_source="market_price",
+        start_price=start_prices[date_positions, stock_positions],
+        end_price=end_prices[
+            horizon_positions,
+            date_positions,
+            stock_positions,
+        ],
+        start_price_date=context.calendar.to_numpy()[start_actual_positions],
+        end_price_date=context.calendar.to_numpy()[end_actual_positions],
+        start_price_source=np.where(
+            start_price_filled[date_positions, stock_positions],
+            "previous_close",
+            reference_price,
+        ),
+        end_price_source=np.where(
+            end_price_filled[
                 horizon_positions,
                 date_positions,
                 stock_positions,
             ],
-            "start_price_date": context.calendar.to_numpy()[start_actual_positions],
-            "end_price_date": context.calendar.to_numpy()[end_actual_positions],
-            "start_price_source": np.where(
-                start_price_filled[date_positions, stock_positions],
-                "previous_close",
-                reference_price,
-            ),
-            "end_price_source": np.where(
-                end_price_filled[
-                    horizon_positions,
-                    date_positions,
-                    stock_positions,
-                ],
-                "previous_close",
-                reference_price,
-            ),
-        }
+            "previous_close",
+            reference_price,
+        ),
     )
+    return labels
 
 
 # 评价一个标准日频 Factor 面板。
@@ -1144,6 +1257,7 @@ def evaluate(
     factor_panel: pd.DataFrame,
     market_data: MarketData,
     settings: Mapping[str, Any],
+    return_panel: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame | pd.DatetimeIndex]:
     """
     计算单因子的多未来周期分组收益和 IC。
@@ -1152,6 +1266,7 @@ def evaluate(
     - factor_panel：日期乘股票的标准 Factor 面板。
     - market_data：已经物化的市场数据对象。
     - settings：已经解析的 ``group_return`` 配置。
+    - return_panel：可选的收盘到收盘日收益宽表。
 
     输出：
     - 返回分组定义、明细、汇总、IC、成员、个股标签和采样日期。
@@ -1159,7 +1274,7 @@ def evaluate(
     功能和用途：
     - 为单因子调用准备一次市场上下文并执行完整评价。
     """
-    context = _prepare_context(market_data, settings)
+    context = _prepare_context(market_data, settings, return_panel)
     return _evaluate_factor(factor_panel, context, settings)
 
 
@@ -1169,6 +1284,7 @@ def evaluate_factors(
     market_data: MarketData,
     settings: Mapping[str, Any],
     max_workers: int | None = None,
+    return_panel: pd.DataFrame | None = None,
 ) -> dict[str, dict[str, pd.DataFrame | pd.DatetimeIndex]]:
     """
     批量评价多个因子面板。
@@ -1178,6 +1294,7 @@ def evaluate_factors(
     - market_data：所有任务共享的只读市场数据。
     - settings：整批任务共用的 ``group_return`` 配置。
     - max_workers：线程数；为空时使用线程池默认值，1 表示串行。
+    - return_panel：可选的收盘到收盘日收益宽表。
 
     输出：
     - 返回保持输入顺序的因子名称到评价结果映射。
@@ -1186,7 +1303,7 @@ def evaluate_factors(
     - 市场日期、股票池、字段权重和参考价格只准备一次。
     - 线程共享大型面板，避免进程并行复制数据。
     """
-    context = _prepare_context(market_data, settings)
+    context = _prepare_context(market_data, settings, return_panel)
     factor_items = list(factor_panels.items())
     if len(factor_items) == 1 or max_workers == 1:
         return {

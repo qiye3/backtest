@@ -178,7 +178,7 @@ def prepare_price_context(
             dtype=float,
         )
 
-    benchmark_open, benchmark_close = _benchmark_prices(market_data, settings)
+    benchmark_open, benchmark_close = benchmark_prices(market_data, settings)
     return PriceContext(
         calendar=calendar,
         stock_codes=stock_codes,
@@ -264,13 +264,16 @@ def _stock_field(
     ).to_numpy(dtype=dtype)
 
 
-def _benchmark_prices(
+def benchmark_prices(
     market_data: MarketData,
     settings: Mapping[str, Any],
 ) -> tuple[np.ndarray, np.ndarray]:
     """按显式来源构造单位一致的基准开盘和收盘序列。"""
     benchmark_code = market_data.benchmark_index
     benchmark_source = settings["benchmark"]["source"]
+    if benchmark_source == "zero":
+        zero_benchmark = np.ones(len(market_data.calendar), dtype=float)
+        return zero_benchmark.copy(), zero_benchmark
     if benchmark_source not in {"index_price", "index_total_return"}:
         raise ValueError(f"未知 benchmark.source: {benchmark_source}")
     benchmark_close = market_data.get_panel(

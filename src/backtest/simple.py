@@ -21,6 +21,12 @@ from src.backtest.prices import (
     required_price_row,
 )
 from src.backtest.rebalance import EPSILON, drift_weights, rebalance_weights
+from src.backtest.returns import (
+    ReturnContext,
+    benchmark_period_gross_return,
+    prepare_return_context,
+    stock_period_gross_returns,
+)
 from src.data.market_data import MarketData
 
 SIMPLE_TRADE_COLUMNS = [
@@ -52,18 +58,34 @@ def run_simple(
     market_data: MarketData,
     settings: Mapping[str, Any],
     need_daily: bool = True,
+    return_panel: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """
     运行一个目标组合的简易累加收益回测。
 
-    输入：单组目标权重、市场数据、simple 配置和是否计算每日收盘
-    估值。
+    输入：单组目标权重、市场数据、simple 配置、是否计算每日收盘估值，以及
+    可选的外部日收益宽表。
     输出：包含事件曲线、交易明细和换手事件的字典。
     """
     if settings["initial_capital"] != 1:
         raise ValueError("simple 回测的 initial_capital 必须为 1")
     if settings["execution"]["policy"] != "ideal":
         raise ValueError("simple 回测只支持 ideal execution")
+    if return_panel is not None:
+        if settings["trade_price"] != "close":
+            raise ValueError("外部日收益回测要求 trade_price 为 close")
+        return_context = prepare_return_context(
+            return_panel,
+            market_data,
+            settings,
+        )
+        return _run_simple_returns_with_context(
+            target_weights,
+            return_context,
+            settings,
+            need_daily,
+        )
+
     price_context = prepare_price_context(market_data, settings)
     return _run_simple_with_context(
         target_weights,
@@ -207,6 +229,129 @@ def _run_simple_with_context(
     }
 
 
+def _run_simple_returns_with_context(
+    target_weights: pd.DataFrame,
+    return_context: ReturnContext,
+    settings: Mapping[str, Any],
+    need_daily: bool,
+) -> dict[str, Any]:
+    """使用外部收盘到收盘日收益运行简易回测。"""
+    targets = prepare_targets(target_weights, return_context, settings)
+    target_positions = return_context.calendar.get_indexer(targets.index)
+    targets_by_position = {
+        date_position: targets.iloc[row_position].to_numpy(dtype=float)
+        for row_position, date_position in enumerate(target_positions)
+    }
+
+    stock_count = len(return_context.stock_codes)
+    weights = np.zeros(stock_count, dtype=float)
+    previous_position = None
+    completed_period_return = 0.0
+    period_growth = 1.0
+    completed_benchmark_return = 0.0
+    benchmark_growth = 1.0
+    curve_rows = []
+    trade_frames = []
+    turnover_rows = []
+    is_initial_event = True
+
+    for date_position, price_kind, is_rebalance, is_terminal in event_plan(
+        targets,
+        return_context,
+        settings,
+        need_daily,
+    ):
+        event_date = return_context.calendar[date_position]
+        held_stocks = weights > EPSILON
+        if previous_position is not None:
+            stock_gross_returns = stock_period_gross_returns(
+                return_context,
+                previous_position,
+                date_position,
+                held_stocks,
+            )
+            portfolio_growth = float(
+                1 - weights.sum() + weights @ stock_gross_returns
+            )
+            weights = weights * stock_gross_returns / portfolio_growth
+            period_growth *= portfolio_growth
+            benchmark_growth *= benchmark_period_gross_return(
+                return_context,
+                previous_position,
+                date_position,
+            )
+
+        if is_initial_event:
+            curve_rows.append(_initial_simple_row(event_date, price_kind))
+
+        event_target = targets_by_position.get(date_position) if is_rebalance else None
+        if is_terminal and settings["liquidate_at_end"]:
+            event_target = np.zeros(stock_count, dtype=float)
+
+        traded = False
+        if event_target is not None and not np.isnan(event_target).all():
+            missing_prices = np.full(stock_count, np.nan)
+            return_sources = np.full(stock_count, "external_return", dtype=object)
+            return_positions = np.full(stock_count, date_position, dtype=int)
+            weights, period_growth, turnover_row, trade_frame = (
+                _execute_simple_rebalance(
+                    weights=weights,
+                    target_weights=event_target,
+                    period_growth=period_growth,
+                    prices=missing_prices,
+                    price_sources=return_sources,
+                    price_positions=return_positions,
+                    date_position=date_position,
+                    price_kind=price_kind,
+                    price_context=return_context,
+                    settings=settings,
+                    is_initial_event=is_initial_event,
+                )
+            )
+            turnover_rows.append(turnover_row)
+            if not trade_frame.empty:
+                trade_frames.append(trade_frame)
+            traded = True
+
+        cumulative_return = completed_period_return + period_growth - 1
+        benchmark_cumulative_return = (
+            completed_benchmark_return + benchmark_growth - 1
+        )
+        curve_rows.append(
+            {
+                "date": event_date,
+                "timestamp": event_timestamp(event_date, price_kind),
+                "price_kind": price_kind,
+                "event": "rebalance" if traded else "valuation",
+                "is_rebalance": is_rebalance,
+                "is_terminal": is_terminal,
+                "cumulative_return": cumulative_return,
+                "benchmark_cumulative_return": benchmark_cumulative_return,
+                "cash_weight": 1 - weights.sum(),
+            }
+        )
+
+        if is_rebalance:
+            completed_period_return = cumulative_return
+            period_growth = 1.0
+            completed_benchmark_return = benchmark_cumulative_return
+            benchmark_growth = 1.0
+        previous_position = date_position
+        is_initial_event = False
+
+    trades = (
+        pd.concat(trade_frames, ignore_index=True)
+        if trade_frames
+        else pd.DataFrame(columns=SIMPLE_TRADE_COLUMNS)
+    )
+    turnover = pd.DataFrame(turnover_rows, columns=TURNOVER_COLUMNS)
+    return {
+        "curves": make_curve_views(curve_rows, need_daily),
+        "trades": trades,
+        "turnover": turnover,
+    }
+
+
 def _execute_simple_rebalance(
     weights: np.ndarray,
     target_weights: np.ndarray,
@@ -216,7 +361,7 @@ def _execute_simple_rebalance(
     price_positions: np.ndarray,
     date_position: int,
     price_kind: str,
-    price_context: PriceContext,
+    price_context: PriceContext | ReturnContext,
     settings: Mapping[str, Any],
     is_initial_event: bool,
 ) -> tuple[np.ndarray, float, dict[str, Any], pd.DataFrame]:
@@ -270,7 +415,7 @@ def _simple_trade_frame(
     date_position: int,
     price_kind: str,
     transaction_cost_rate: float,
-    price_context: PriceContext,
+    price_context: PriceContext | ReturnContext,
 ) -> pd.DataFrame:
     """通过非零成交坐标构造一次简易调仓的交易表。"""
     stock_positions = np.flatnonzero(np.abs(weight_changes) > EPSILON)

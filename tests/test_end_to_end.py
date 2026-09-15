@@ -8,13 +8,16 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import matplotlib
+import numpy as np
 import pandas as pd
 import yaml
 
 from src.backtest.io import load_backtest_results, save_backtest_results
 from src.cli import run
 from src.config import load_config
-from src.group_return.evaluator import _prepare_return_horizons
+from src.data.market_data import MarketData
+from src.group_return.evaluator import _prepare_return_horizons, evaluate
+from src.plotter.evaluation import _monthly_rank_ic
 
 matplotlib.use("Agg")
 
@@ -32,6 +35,11 @@ FIGURE_FILES = {
     "01_evaluation.png",
     "02_simple_backtest.png",
     "03_account_backtest.png",
+}
+OVERALL_FIGURE_FILES = {
+    "factor_correlation_heatmap.png",
+    "factor_ic_distribution.png",
+    "factor_return_distribution.png",
 }
 
 
@@ -66,6 +74,21 @@ class EndToEndTests(unittest.TestCase):
             [pd.Timestamp("2024-02-12"), pd.Timestamp("2024-02-08")],
         )
 
+    def test_monthly_rank_ic_uses_calendar_month_mean(self) -> None:
+        """右图月度柱应是当月全部采样日 RankIC 的算术平均。"""
+        monthly_rank_ic = _monthly_rank_ic(
+            pd.DataFrame(
+                {
+                    "date": pd.to_datetime(
+                        ["2024-01-05", "2024-01-12", "2024-02-02"]
+                    ),
+                    "rank_ic": [0.1, 0.3, -0.2],
+                }
+            )
+        )
+        self.assertEqual(monthly_rank_ic.index.astype(str).tolist(), ["2024-01", "2024-02"])
+        np.testing.assert_allclose(monthly_rank_ic.to_numpy(), [0.2, -0.2])
+
     def test_full_run_cache_reuse_and_plotter_restore(self) -> None:
         """运行完整链路，并在断开原始数据后复用两类缓存。"""
         with TemporaryDirectory() as temporary_directory:
@@ -85,6 +108,18 @@ class EndToEndTests(unittest.TestCase):
             }
             self._write_config(config_path, config_data)
             config = load_config(config_path)
+            self.assertEqual(
+                config.raw["plots"]["evaluation"]["group_colors"][-1],
+                "#006837",
+            )
+            self.assertEqual(
+                config.raw["plots"]["simple"]["group_colors"][-1],
+                "#A50026",
+            )
+            self.assertEqual(
+                config.raw["plots"]["evaluation"]["rank_ic_view"],
+                "monthly",
+            )
             self.assertEqual(
                 [
                     config.raw[section_name]["factor_lag_days"]
@@ -152,7 +187,28 @@ class EndToEndTests(unittest.TestCase):
                     "simple_backtest",
                     "account_backtest",
                     "plotter",
+                    "overall_evaluation",
                 ],
+            )
+            self.assertEqual(
+                {
+                    path.name
+                    for path in (output_root / "overall").glob("*.png")
+                },
+                OVERALL_FIGURE_FILES,
+            )
+            overall_result = full_results["overall_evaluation"]
+            self.assertEqual(
+                overall_result["factor_correlation"].shape,
+                (len(FACTOR_NAMES), len(FACTOR_NAMES)),
+            )
+            self.assertEqual(
+                len(overall_result["factor_ic"]),
+                len(FACTOR_NAMES) * 4,
+            )
+            self.assertEqual(
+                len(overall_result["factor_return"]),
+                len(FACTOR_NAMES) * 4,
             )
             self._assert_outputs(output_root)
 
@@ -189,6 +245,97 @@ class EndToEndTests(unittest.TestCase):
                     {"factor.parquet"},
                 )
 
+    def test_external_returns_drive_evaluation_and_simple(self) -> None:
+        """外部日收益应同时替代 evaluation 标签和 simple 持仓收益。"""
+        with TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory)
+            config_path = workspace / "external_returns.yaml"
+            config_data = self._test_config(workspace / "price_output")
+            config_data["market_data"]["cache_root"] = str(
+                workspace / "market_cache"
+            )
+            config_data["run"].update(
+                {
+                    "account_backtest": False,
+                    "plotter": False,
+                    "overall_evaluation": False,
+                }
+            )
+            self._write_config(config_path, config_data)
+            price_results = run(load_config(config_path))
+
+            market_data = MarketData.from_yaml(config_path)
+            close_prices = market_data.get_panel(
+                "stock_quote",
+                "S_DQ_ADJCLOSE",
+            )
+            external_returns = close_prices.pct_change(fill_method=None)
+            external_return_path = workspace / "daily_returns.parquet"
+            external_returns.to_parquet(external_return_path)
+
+            config_data["output"]["root"] = str(workspace / "return_output")
+            config_data["external_returns"] = {
+                "path": str(external_return_path),
+            }
+            config_data["simple_backtest"]["benchmark"]["source"] = "zero"
+            self._write_config(config_path, config_data)
+            external_results = run(load_config(config_path))
+
+            price_evaluation = price_results["group_return"]["return_10d"]
+            external_evaluation = external_results["group_return"]["return_10d"]
+            np.testing.assert_allclose(
+                price_evaluation["detail"]["group_return"],
+                external_evaluation["detail"]["group_return"],
+                equal_nan=True,
+            )
+            np.testing.assert_allclose(
+                price_evaluation["ic"][["ic", "rank_ic"]],
+                external_evaluation["ic"][["ic", "rank_ic"]],
+                equal_nan=True,
+            )
+
+            price_curve = price_results["simple_backtest"]["return_10d"][
+                "periods"
+            ][1]["groups"]["G10"]["curves"]["daily"]
+            external_curve = external_results["simple_backtest"]["return_10d"][
+                "periods"
+            ][1]["groups"]["G10"]["curves"]["daily"]
+            np.testing.assert_allclose(
+                price_curve["cumulative_return"],
+                external_curve["cumulative_return"],
+                rtol=1e-10,
+                atol=1e-12,
+            )
+            np.testing.assert_allclose(
+                external_curve["benchmark_cumulative_return"],
+                0.0,
+            )
+
+            factor_panel = external_results["factors"]["return_10d"]
+            excess_settings = deepcopy(load_config(config_path).raw["group_return"])
+            excess_settings["target"] = {
+                "type": "benchmark_excess_return",
+                "benchmark_source": "index_price",
+            }
+            excess_evaluation = evaluate(
+                factor_panel=factor_panel,
+                market_data=market_data,
+                settings=excess_settings,
+                return_panel=external_returns,
+            )
+            np.testing.assert_allclose(
+                external_evaluation["ic"][["ic", "rank_ic"]],
+                excess_evaluation["ic"][["ic", "rank_ic"]],
+                equal_nan=True,
+            )
+            self.assertFalse(
+                np.allclose(
+                    external_evaluation["detail"]["group_return"],
+                    excess_evaluation["detail"]["group_return"],
+                    equal_nan=True,
+                )
+            )
+
     def test_daily_rebalance_and_result_restore(self) -> None:
         """按每个和每五个交易日回测，并校验年化频率与缓存恢复。"""
         with TemporaryDirectory() as temporary_directory:
@@ -210,6 +357,7 @@ class EndToEndTests(unittest.TestCase):
                 {
                     "group_return": False,
                     "plotter": False,
+                    "overall_evaluation": False,
                 }
             )
             for section_name in ["simple_backtest", "account_backtest"]:
@@ -341,6 +489,7 @@ class EndToEndTests(unittest.TestCase):
                 "simple_backtest": False,
                 "account_backtest": False,
                 "plotter": False,
+                "overall_evaluation": False,
                 "refresh_market_data": False,
             }
         )
@@ -361,6 +510,7 @@ class EndToEndTests(unittest.TestCase):
                 "simple_backtest": False,
                 "account_backtest": False,
                 "plotter": True,
+                "overall_evaluation": False,
                 "refresh_market_data": False,
             }
         )
@@ -381,6 +531,7 @@ class EndToEndTests(unittest.TestCase):
                 "simple_backtest": True,
                 "account_backtest": True,
                 "plotter": False,
+                "overall_evaluation": False,
             }
         )
         config_data["output"]["save_parquet"].update(

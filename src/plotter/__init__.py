@@ -6,10 +6,12 @@ from src.plotter.engine import (
     plot_factors,
     plot_result_directory,
 )
+from src.plotter.overall import plot_overall_evaluation
 
 __all__ = [
     "plot_factor",
     "plot_factor_from_directory",
     "plot_factors",
     "plot_result_directory",
+    "plot_overall_evaluation",
 ]

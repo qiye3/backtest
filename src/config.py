@@ -21,6 +21,14 @@ STAGE_NAMES = [
     "simple_backtest",
     "account_backtest",
     "plotter",
+    "overall_evaluation",
+]
+CALCULATION_STAGES = [
+    "factors",
+    "group_return",
+    "simple_backtest",
+    "account_backtest",
+    "overall_evaluation",
 ]
 RUN_KEYS = {*STAGE_NAMES, "max_workers", "refresh_market_data"}
 ROOT_KEYS = {
@@ -33,6 +41,7 @@ ROOT_KEYS = {
     "account_backtest",
     "metrics",
     "plots",
+    "external_returns",
 }
 PLOT_METRICS = {
     "annual_return",
@@ -61,7 +70,7 @@ DEFAULT_QUANTILE_EDGES = [
     [0.8, 0.9],
     [0.9, 1.0],
 ]
-DEFAULT_GROUP_COLORS = [
+DEFAULT_BACKTEST_GROUP_COLORS = [
     "#006837",
     "#1A9850",
     "#66BD63",
@@ -73,6 +82,7 @@ DEFAULT_GROUP_COLORS = [
     "#D73027",
     "#A50026",
 ]
+DEFAULT_EVALUATION_GROUP_COLORS = list(reversed(DEFAULT_BACKTEST_GROUP_COLORS))
 DEFAULT_METRIC_COLUMNS = [
     "annual_return",
     "annual_volatility",
@@ -97,12 +107,18 @@ DEFAULT_GROUPING = {
     },
 }
 CONFIG_DEFAULTS = {
+    "run": {
+        "overall_evaluation": False,
+    },
     "output": {
         "save_parquet": dict(DEFAULT_PARQUET_RETENTION),
     },
     "group_return": {
         "factor_lag_days": 0,
         "grouping": deepcopy(DEFAULT_GROUPING),
+        "target": {
+            "type": "stock_return",
+        },
     },
     "simple_backtest": {
         "factor_lag_days": 0,
@@ -133,14 +149,15 @@ CONFIG_DEFAULTS = {
         "evaluation": {
             "enabled": True,
             "group_panel": "left",
-            "group_colors": list(DEFAULT_GROUP_COLORS),
+            "group_colors": list(DEFAULT_EVALUATION_GROUP_COLORS),
             "ic_color": "#D06A2D",
             "rank_ic_color": "#174A73",
+            "rank_ic_view": "monthly",
         },
         "simple": {
             "enabled": True,
             "layout": "rows",
-            "group_colors": list(DEFAULT_GROUP_COLORS),
+            "group_colors": list(DEFAULT_BACKTEST_GROUP_COLORS),
             "benchmark_color": "#777777",
             "summary_quantile": [0.9, 1.0],
             "metric_columns": list(DEFAULT_METRIC_COLUMNS),
@@ -148,7 +165,7 @@ CONFIG_DEFAULTS = {
         "account": {
             "enabled": True,
             "layout": "rows",
-            "group_colors": list(DEFAULT_GROUP_COLORS),
+            "group_colors": list(DEFAULT_BACKTEST_GROUP_COLORS),
             "benchmark_color": "#777777",
             "summary_quantile": [0.9, 1.0],
             "metric_columns": list(DEFAULT_METRIC_COLUMNS),
@@ -165,6 +182,7 @@ class RunConfig:
     raw: dict[str, Any]
     output_root: Path
     factor_config_directory: Path | None
+    external_return_path: Path | None
 
 
 def save_config_snapshot(config: RunConfig) -> Path:
@@ -212,9 +230,22 @@ def load_config(config_path: str | Path) -> RunConfig:
     )
 
     run_settings = raw_config["run"]
-    calculation_stages = STAGE_NAMES[:-1]
-    if any(run_settings[stage] for stage in calculation_stages):
+    if any(run_settings[stage] for stage in CALCULATION_STAGES):
         _section(raw_config, "market_data")
+
+    external_return_path = None
+    if "external_returns" in raw_config:
+        external_return_config = _section(raw_config, "external_returns")
+        _check_keys(
+            external_return_config,
+            {"path"},
+            {"path"},
+            "external_returns",
+        )
+        external_return_path = _resolve_path(
+            resolved_path,
+            external_return_config["path"],
+        )
 
     factor_config_directory = None
     if run_settings["factors"]:
@@ -229,14 +260,17 @@ def load_config(config_path: str | Path) -> RunConfig:
             resolved_path,
             factors_config["config_directory"],
         )
-    if run_settings["group_return"]:
+    if run_settings["group_return"] or run_settings["overall_evaluation"]:
         _validate_group_return(_section(raw_config, "group_return"))
     for stage in ["simple_backtest", "account_backtest"]:
         if run_settings[stage]:
             _validate_backtest(_section(raw_config, stage), stage)
     if run_settings["simple_backtest"] or run_settings["account_backtest"]:
         _validate_metrics(_section(raw_config, "metrics"))
-    if run_settings["plotter"]:
+    if external_return_path is not None and run_settings["simple_backtest"]:
+        if raw_config["simple_backtest"]["trade_price"] != "close":
+            raise ValueError("外部日收益回测要求 simple_backtest.trade_price 为 close")
+    if run_settings["plotter"] or run_settings["overall_evaluation"]:
         _validate_plots(_section(raw_config, "plots"))
 
     return RunConfig(
@@ -244,6 +278,7 @@ def load_config(config_path: str | Path) -> RunConfig:
         raw=raw_config,
         output_root=_resolve_path(resolved_path, raw_config["output"]["root"]),
         factor_config_directory=factor_config_directory,
+        external_return_path=external_return_path,
     )
 
 
@@ -293,6 +328,7 @@ def _validate_group_return(settings: Mapping[str, Any]) -> None:
         "insufficient_stocks_policy",
         "missing_price_policy",
         "max_stale_days",
+        "target",
     }
     _check_keys(settings, expected_keys, expected_keys, "group_return")
     _date_interval(settings, "group_return")
@@ -307,6 +343,7 @@ def _validate_group_return(settings: Mapping[str, Any]) -> None:
         "group_return.factor_lag_days",
     )
     _validate_future_return_periods(settings)
+    _validate_evaluation_target(settings["target"])
     choices = {
         "reference_price": {"open", "close"},
         "group_return_agg": {"mean", "median"},
@@ -321,6 +358,31 @@ def _validate_group_return(settings: Mapping[str, Any]) -> None:
             f"group_return.{field_name}",
         )
     _validate_missing_price(settings, "group_return")
+
+
+def _validate_evaluation_target(settings: Mapping[str, Any]) -> None:
+    """校验个股收益或相对基准超额收益评价目标。"""
+    target_type = settings["type"]
+    _choice(
+        target_type,
+        {"stock_return", "benchmark_excess_return"},
+        "group_return.target.type",
+    )
+    expected_keys = {"type"}
+    if target_type == "benchmark_excess_return":
+        expected_keys.add("benchmark_source")
+    _check_keys(
+        settings,
+        expected_keys,
+        expected_keys,
+        "group_return.target",
+    )
+    if target_type == "benchmark_excess_return":
+        _choice(
+            settings["benchmark_source"],
+            {"index_price", "index_total_return"},
+            "group_return.target.benchmark_source",
+        )
 
 
 def _validate_backtest(
@@ -381,9 +443,12 @@ def _validate_backtest(
         {"source"},
         f"{section_name}.benchmark",
     )
+    benchmark_sources = {"index_price", "index_total_return"}
+    if section_name == "simple_backtest":
+        benchmark_sources.add("zero")
     _choice(
         settings["benchmark"]["source"],
-        {"index_price", "index_total_return"},
+        benchmark_sources,
         f"{section_name}.benchmark.source",
     )
 
@@ -641,7 +706,14 @@ def _validate_distribution_plot(settings: Mapping[str, Any]) -> None:
 
 def _validate_evaluation_plot(settings: Mapping[str, Any]) -> None:
     """校验分组收益与 IC 图设置。"""
-    fields = {"enabled", "group_panel", "group_colors", "ic_color", "rank_ic_color"}
+    fields = {
+        "enabled",
+        "group_panel",
+        "group_colors",
+        "ic_color",
+        "rank_ic_color",
+        "rank_ic_view",
+    }
     _plot_keys(settings, fields, "evaluation")
     if settings["enabled"]:
         _choice(
@@ -650,6 +722,11 @@ def _validate_evaluation_plot(settings: Mapping[str, Any]) -> None:
             "plots.evaluation.group_panel",
         )
         _colors(settings["group_colors"], "plots.evaluation.group_colors")
+        _choice(
+            settings["rank_ic_view"],
+            {"monthly", "sampling"},
+            "plots.evaluation.rank_ic_view",
+        )
 
 
 def _validate_simple_plot(settings: Mapping[str, Any]) -> None:

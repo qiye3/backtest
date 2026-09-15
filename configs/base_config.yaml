@@ -14,6 +14,8 @@ run:
   account_backtest: true
   # 是否根据已有或本次生成的结果绘图。
   plotter: true
+  # 是否在所有单因子阶段结束后输出跨因子相关性、IC 和多空收益分布。
+  overall_evaluation: true
   # 因子间并行计算的线程数；1 表示串行执行。
   max_workers: 4
   # true 从原始 CSV 重建市场缓存；false 优先复用已有 Parquet。
@@ -60,6 +62,11 @@ market_data:
       fields:
         - S_DQ_ADJCLOSE
 
+# 可选外部日收益宽表；配置后 evaluation 和 simple 共用，account 仍使用真实价格。
+# 索引为交易日、列为股票代码，t 行表示 t-1 收盘至 t 收盘的收益。
+# external_returns:
+#   path: /path/to/daily_returns.parquet
+
 # 默认分组为等权十分组；需要自定义时增加 grouping 分区覆盖默认值。
 group_return:
   # 评价区间；end 同时是未来收益实现截止日。
@@ -77,6 +84,11 @@ group_return:
     holiday_policy: previous_trading_day
   # 未来收益起终点使用复权收盘价；还可选择 open。
   reference_price: close
+  # stock_return 为个股收益；benchmark_excess_return 为减去中证800同期收益。
+  target:
+    type: stock_return
+    # 超额收益可选择 index_price 或 index_total_return；仅超额模式填写。
+    # benchmark_source: index_total_return
   # 交易日周期按交易日位置确定终点。
   future_return_days:
     - 1
@@ -117,7 +129,7 @@ simple_backtest:
   # 成交价格可选 open、close。
   trade_price: close
   benchmark:
-    # 可选 index_price、index_total_return。
+    # 可选 index_price、index_total_return、zero；中性化外部收益可使用 zero。
     source: index_price
   # first_rebalance 等待首个计划调仓日；start 在回测首日建仓。
   initial_entry: first_rebalance

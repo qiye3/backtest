@@ -13,7 +13,11 @@ import pandas as pd
 from src.backtest.account import _run_account_with_context
 from src.backtest.metrics import calculate_metrics
 from src.backtest.prices import PriceContext, prepare_price_context
-from src.backtest.simple import _run_simple_with_context
+from src.backtest.returns import ReturnContext, prepare_return_context
+from src.backtest.simple import (
+    _run_simple_returns_with_context,
+    _run_simple_with_context,
+)
 from src.backtest.targets import (
     TargetContext,
     build_targets,
@@ -29,6 +33,7 @@ def run_backtests(
     metrics_settings: Mapping[str, Any],
     mode: str,
     max_workers: int | None = None,
+    return_panel: pd.DataFrame | None = None,
 ) -> dict[str, dict[str, Any]]:
     """
     批量运行一套 simple 或 account 回测配置。
@@ -39,6 +44,7 @@ def run_backtests(
     - settings、metrics_settings：已经解析的回测和指标配置。
     - mode：``simple`` 或 ``account``。
     - max_workers：1 表示串行，空值使用线程池默认并发数。
+    - return_panel：可选的收盘到收盘日收益宽表，仅用于 simple。
 
     输出：
     - 返回按因子组织的分组定义、metrics，以及各周期的动作、成员、目标和
@@ -48,8 +54,19 @@ def run_backtests(
     任务。两阶段都共享市场上下文，线程执行不会复制大型 DataFrame。
     """
     _validate_mode_settings(settings, mode)
+    if mode == "account" and return_panel is not None:
+        raise ValueError("account backtest 不接受外部收益面板")
+    if return_panel is not None and settings["trade_price"] != "close":
+        raise ValueError("外部日收益回测要求 trade_price 为 close")
     target_context = prepare_target_context(market_data, settings)
-    price_context = prepare_price_context(market_data, settings)
+    if mode == "simple" and return_panel is not None:
+        simulation_context = prepare_return_context(
+            return_panel,
+            market_data,
+            settings,
+        )
+    else:
+        simulation_context = prepare_price_context(market_data, settings)
     need_daily = (
         settings["curve_frequency"] in {"daily", "both"}
         or metrics_settings["return_frequency"] == "daily"
@@ -71,7 +88,7 @@ def run_backtests(
         group_results = [
             _run_group_task(
                 task,
-                price_context,
+                simulation_context,
                 settings,
                 metrics_settings,
                 mode,
@@ -93,7 +110,7 @@ def run_backtests(
                 executor.map(
                     _run_group_task,
                     _group_tasks(target_results),
-                    repeat(price_context),
+                    repeat(simulation_context),
                     repeat(settings),
                     repeat(metrics_settings),
                     repeat(mode),
@@ -155,7 +172,7 @@ def _group_tasks(
 
 def _run_group_task(
     task: tuple[str, int, str, pd.DataFrame],
-    price_context: PriceContext,
+    simulation_context: PriceContext | ReturnContext,
     settings: Mapping[str, Any],
     metrics_settings: Mapping[str, Any],
     mode: str,
@@ -163,12 +180,13 @@ def _run_group_task(
 ) -> tuple[str, int, str, dict[str, Any], dict[str, Any]]:
     """运行一个分组组合的费后和零费率对照，并计算指标。"""
     factor_name, interval, group_id, target_weights = task
-    runner = (
-        _run_simple_with_context
-        if mode == "simple"
-        else _run_account_with_context
-    )
-    result = runner(target_weights, price_context, settings, need_daily)
+    if isinstance(simulation_context, ReturnContext):
+        runner = _run_simple_returns_with_context
+    elif mode == "simple":
+        runner = _run_simple_with_context
+    else:
+        runner = _run_account_with_context
+    result = runner(target_weights, simulation_context, settings, need_daily)
     if settings["transaction_cost_rate"] == 0:
         gross_result = result
     else:
@@ -176,7 +194,7 @@ def _run_group_task(
         gross_settings["transaction_cost_rate"] = 0.0
         gross_result = runner(
             target_weights,
-            price_context,
+            simulation_context,
             gross_settings,
             need_daily,
         )

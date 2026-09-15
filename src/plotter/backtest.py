@@ -348,6 +348,7 @@ def _backtest_config_label(settings: Mapping[str, Any]) -> str:
         )
     fields.extend(
         [
+            f"return_source: {settings.get('return_source', 'market_price')}",
             f"trade_price: {settings['trade_price']}",
             f"transaction_cost_rate: {settings['transaction_cost_rate']}",
         ]
