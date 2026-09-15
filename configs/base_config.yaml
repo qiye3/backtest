@@ -86,17 +86,18 @@ group_return:
   reference_price: close
   # stock_return 为个股收益；benchmark_excess_return 为减去中证800同期收益。
   target:
-    type: stock_return
+    type: benchmark_excess_return
     # 超额收益可选择 index_price 或 index_total_return；仅超额模式填写。
-    # benchmark_source: index_total_return
+    benchmark_source: index_price
   # 交易日周期按交易日位置确定终点。
-  future_return_days:
-    - 1
+  # future_return_days:
+    # - 1
   # 周周期按未来自然周的 sampling.weekday 确定终点，不换算成交易日。
   future_return_weeks:
     - 1
     - 2
     - 4
+    - 8
   # 同日同组股票收益的聚合方式；可选 mean、median。
   group_return_agg: mean
   # 同一周期跨评价日的聚合方式；可选 mean、median。

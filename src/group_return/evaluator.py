@@ -132,8 +132,14 @@ def _prepare_return_horizons(
     settings: Mapping[str, Any],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """按交易日位移和自然周目标日分别计算未来收益端点。"""
-    future_return_days = np.asarray(settings["future_return_days"], dtype=int)
-    future_return_weeks = np.asarray(settings["future_return_weeks"], dtype=int)
+    future_return_days = np.asarray(
+        settings.get("future_return_days", []),
+        dtype=int,
+    )
+    future_return_weeks = np.asarray(
+        settings.get("future_return_weeks", []),
+        dtype=int,
+    )
     day_end_positions = (
         sample_positions[None, :] + future_return_days[:, None]
     )

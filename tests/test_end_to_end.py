@@ -46,6 +46,21 @@ OVERALL_FIGURE_FILES = {
 class EndToEndTests(unittest.TestCase):
     """验证全阶段、日度调仓、市场缓存和 plotter-only 恢复。"""
 
+    def test_group_return_accepts_week_horizons_without_day_horizons(self) -> None:
+        """仅配置自然周周期时，主配置应可直接加载。"""
+        with TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory)
+            config_data = self._test_config(workspace / "output")
+            config_data["group_return"].pop("future_return_days", None)
+            config_data["group_return"]["future_return_weeks"] = [1]
+            config_path = workspace / "weekly_only.yaml"
+            self._write_config(config_path, config_data)
+
+            config = load_config(config_path)
+
+            self.assertNotIn("future_return_days", config.raw["group_return"])
+            self.assertEqual(config.raw["group_return"]["future_return_weeks"], [1])
+
     def test_week_horizon_uses_calendar_week(self) -> None:
         """周周期按目标自然周回退，不等同于五个交易日。"""
         calendar = pd.bdate_range("2024-02-01", "2024-02-16").difference(
@@ -73,6 +88,21 @@ class EndToEndTests(unittest.TestCase):
             calendar[end_positions[:, 0]].tolist(),
             [pd.Timestamp("2024-02-12"), pd.Timestamp("2024-02-08")],
         )
+
+        horizon_values, horizon_units, _ = _prepare_return_horizons(
+            calendar=calendar,
+            sample_dates=sample_dates,
+            sample_positions=sample_positions,
+            settings={
+                "future_return_weeks": [1],
+                "sampling": {
+                    "weekday": "FRI",
+                    "holiday_policy": "previous_trading_day",
+                },
+            },
+        )
+        self.assertEqual(horizon_values.tolist(), [1])
+        self.assertEqual(horizon_units.tolist(), ["weeks"])
 
     def test_monthly_rank_ic_uses_calendar_month_mean(self) -> None:
         """右图月度柱应是当月全部采样日 RankIC 的算术平均。"""
@@ -447,6 +477,9 @@ class EndToEndTests(unittest.TestCase):
             {
                 "start": "2024-02-02",
                 "end": "2024-06-07",
+                "target": {"type": "stock_return"},
+                "future_return_days": [1],
+                "future_return_weeks": [1, 2, 4],
             }
         )
         for section_name in ["simple_backtest", "account_backtest"]:

@@ -330,7 +330,11 @@ def _validate_group_return(settings: Mapping[str, Any]) -> None:
         "max_stale_days",
         "target",
     }
-    _check_keys(settings, expected_keys, expected_keys, "group_return")
+    required_keys = expected_keys - {
+        "future_return_days",
+        "future_return_weeks",
+    }
+    _check_keys(settings, required_keys, expected_keys, "group_return")
     _date_interval(settings, "group_return")
     _universe(settings["universe_indices"], "group_return")
     _validate_grouping(settings["grouping"], "group_return.grouping")
@@ -829,8 +833,8 @@ def _positive_integer_list(value: Any, location: str) -> None:
 
 def _validate_future_return_periods(settings: Mapping[str, Any]) -> None:
     """校验日、周未来收益周期，至少要求配置一种周期。"""
-    future_return_days = settings["future_return_days"]
-    future_return_weeks = settings["future_return_weeks"]
+    future_return_days = settings.get("future_return_days", [])
+    future_return_weeks = settings.get("future_return_weeks", [])
     for field_name, periods in [
         ("future_return_days", future_return_days),
         ("future_return_weeks", future_return_weeks),
