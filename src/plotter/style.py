@@ -39,10 +39,10 @@ def group_labels(definitions: pd.DataFrame) -> tuple[list[str], bool]:
 
 
 def style_date_axis(axis: plt.Axes) -> None:
-    """设置紧凑日期刻度。"""
+    """以完整年月日格式显示自动选取的日期刻度。"""
     locator = mdates.AutoDateLocator(minticks=3, maxticks=6)
     axis.xaxis.set_major_locator(locator)
-    axis.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+    axis.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
 
 
 def style_axis(axis: plt.Axes) -> None:
