@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from src.backtest import run_backtests
 from src.backtest.io import (
+    RESULT_FILE_NAMES,
     load_backtest_results,
     save_backtest_results,
     save_metrics_summary,
@@ -16,9 +19,14 @@ from src.backtest.io import (
 from src.config import RunConfig, load_config, save_config_snapshot
 from src.data.market_data import MarketData
 from src.factors import calc_factors, load_factors
-from src.factors.io import load_factor_panels, save_factor_panels
+from src.factors.io import (
+    FACTOR_FILE_NAME,
+    load_factor_panels,
+    save_factor_panels,
+)
 from src.group_return import evaluate_factors
 from src.group_return.io import (
+    RESULT_FILE_NAME as GROUP_RETURN_FILE_NAME,
     load_evaluation_results,
     save_evaluation_results,
 )
@@ -140,7 +148,7 @@ def _calculate_factors(
     config: RunConfig,
     market_data: MarketData | None,
 ) -> dict[str, pd.DataFrame] | None:
-    """运行启用的 Factor 阶段并覆盖保存标准面板。"""
+    """运行启用的 Factor 阶段并按输出开关处理标准面板。"""
     if not config.raw["run"]["factors"]:
         return None
     factors = load_factors(config.factor_config_directory)
@@ -149,7 +157,14 @@ def _calculate_factors(
         market_data=market_data,
         max_workers=config.raw["run"]["max_workers"],
     )
-    save_factor_panels(factor_panels, config.output_root)
+    if config.raw["output"]["save_parquet"]["factor"]:
+        save_factor_panels(factor_panels, config.output_root)
+    else:
+        _remove_factor_parquets(
+            factor_panels,
+            config.output_root,
+            FACTOR_FILE_NAME,
+        )
     return factor_panels
 
 
@@ -158,7 +173,7 @@ def _run_group_return(
     factor_panels: dict[str, pd.DataFrame] | None,
     market_data: MarketData | None,
 ) -> dict[str, dict[str, Any]] | None:
-    """运行启用的评价阶段并覆盖保存紧凑结果。"""
+    """运行启用的评价阶段并按输出开关处理 Parquet。"""
     if not config.raw["run"]["group_return"]:
         return None
     results = evaluate_factors(
@@ -167,7 +182,14 @@ def _run_group_return(
         settings=config.raw["group_return"],
         max_workers=config.raw["run"]["max_workers"],
     )
-    save_evaluation_results(results, config.output_root)
+    if config.raw["output"]["save_parquet"]["group_return"]:
+        save_evaluation_results(results, config.output_root)
+    else:
+        _remove_factor_parquets(
+            results,
+            config.output_root,
+            GROUP_RETURN_FILE_NAME,
+        )
     return results
 
 
@@ -177,7 +199,7 @@ def _run_backtest(
     market_data: MarketData | None,
     mode: str,
 ) -> dict[str, dict[str, Any]] | None:
-    """运行启用的一类回测并覆盖保存指标、曲线和交易结果。"""
+    """运行启用的一类回测并按输出开关处理 Parquet。"""
     section_name = f"{mode}_backtest"
     if not config.raw["run"][section_name]:
         return None
@@ -189,13 +211,30 @@ def _run_backtest(
         mode=mode,
         max_workers=config.raw["run"]["max_workers"],
     )
-    save_backtest_results(
-        results,
-        config.output_root,
-        mode,
-        save_details=config.raw["output"]["save_backtest_details"],
-    )
+    if config.raw["output"]["save_parquet"][section_name]:
+        save_backtest_results(
+            results,
+            config.output_root,
+            mode,
+            save_details=config.raw["output"]["save_backtest_details"],
+        )
+    else:
+        _remove_factor_parquets(
+            results,
+            config.output_root,
+            RESULT_FILE_NAMES[mode],
+        )
     return results
+
+
+def _remove_factor_parquets(
+    factor_names: Iterable[str],
+    output_root: Path,
+    file_name: str,
+) -> None:
+    """删除已启用阶段遗留的同类 Parquet，保证关闭开关后不保留旧结果。"""
+    for factor_name in factor_names:
+        (output_root / factor_name / file_name).unlink(missing_ok=True)
 
 
 def main() -> None:

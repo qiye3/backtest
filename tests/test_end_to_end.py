@@ -77,6 +77,12 @@ class EndToEndTests(unittest.TestCase):
                 workspace / "market_cache"
             )
             config_data["output"]["save_backtest_details"] = True
+            config_data["output"]["save_parquet"] = {
+                "factor": True,
+                "group_return": True,
+                "simple_backtest": True,
+                "account_backtest": True,
+            }
             self._write_config(config_path, config_data)
             config = load_config(config_path)
             self.assertEqual(
@@ -175,6 +181,13 @@ class EndToEndTests(unittest.TestCase):
                 },
             )
             self._run_plotter_from_results(config_path, config_data)
+            self._run_without_derived_parquets(config_path, config_data)
+            for factor_name in FACTOR_NAMES:
+                factor_directory = output_root / factor_name
+                self.assertEqual(
+                    {path.name for path in factor_directory.glob("*.parquet")},
+                    {"factor.parquet"},
+                )
 
     def test_daily_rebalance_and_result_restore(self) -> None:
         """按每个和每五个交易日回测，并校验年化频率与缓存恢复。"""
@@ -187,6 +200,12 @@ class EndToEndTests(unittest.TestCase):
                 workspace / "market_cache"
             )
             config_data["output"]["save_backtest_details"] = True
+            config_data["output"]["save_parquet"].update(
+                {
+                    "simple_backtest": True,
+                    "account_backtest": True,
+                }
+            )
             config_data["run"].update(
                 {
                     "group_return": False,
@@ -347,6 +366,35 @@ class EndToEndTests(unittest.TestCase):
         )
         self._write_config(config_path, config_data)
         self.assertEqual(list(run(load_config(config_path))), ["plotter"])
+
+    def _run_without_derived_parquets(
+        self,
+        config_path: Path,
+        source_config: dict,
+    ) -> None:
+        """运行三个下游阶段并确认关闭开关时清理已有 Parquet。"""
+        config_data = deepcopy(source_config)
+        config_data["run"].update(
+            {
+                "factors": False,
+                "group_return": True,
+                "simple_backtest": True,
+                "account_backtest": True,
+                "plotter": False,
+            }
+        )
+        config_data["output"]["save_parquet"].update(
+            {
+                "group_return": False,
+                "simple_backtest": False,
+                "account_backtest": False,
+            }
+        )
+        self._write_config(config_path, config_data)
+        self.assertEqual(
+            list(run(load_config(config_path))),
+            ["group_return", "simple_backtest", "account_backtest"],
+        )
 
     def _assert_outputs(self, output_root: Path) -> None:
         """检查结果文件、图像和核心表均实际包含记录。"""

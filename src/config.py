@@ -80,6 +80,12 @@ DEFAULT_METRIC_COLUMNS = [
     "max_drawdown",
     "annual_turnover",
 ]
+DEFAULT_PARQUET_RETENTION = {
+    "factor": True,
+    "group_return": False,
+    "simple_backtest": False,
+    "account_backtest": False,
+}
 DEFAULT_GROUPING = {
     "quantile_edges": DEFAULT_QUANTILE_EDGES,
     "min_stocks": 20,
@@ -91,6 +97,9 @@ DEFAULT_GROUPING = {
     },
 }
 CONFIG_DEFAULTS = {
+    "output": {
+        "save_parquet": dict(DEFAULT_PARQUET_RETENTION),
+    },
     "group_return": {
         "factor_lag_days": 0,
         "grouping": deepcopy(DEFAULT_GROUPING),
@@ -180,10 +189,23 @@ def load_config(config_path: str | Path) -> RunConfig:
     _validate_run(raw_config["run"])
     _check_keys(
         raw_config["output"],
-        {"root", "save_backtest_details"},
-        {"root", "save_backtest_details"},
+        {"root", "save_parquet", "save_backtest_details"},
+        {"root", "save_parquet", "save_backtest_details"},
         "output",
     )
+    parquet_settings = raw_config["output"]["save_parquet"]
+    parquet_names = set(DEFAULT_PARQUET_RETENTION)
+    _check_keys(
+        parquet_settings,
+        parquet_names,
+        parquet_names,
+        "output.save_parquet",
+    )
+    for parquet_name in parquet_names:
+        _boolean(
+            parquet_settings[parquet_name],
+            f"output.save_parquet.{parquet_name}",
+        )
     _boolean(
         raw_config["output"]["save_backtest_details"],
         "output.save_backtest_details",

@@ -27,6 +27,12 @@ factors:
 output:
   # 每个因子的结果和图像写入该目录下的同名子目录。
   root: ../outputs_real_wind
+  # 分别控制四类阶段结果是否保留为 Parquet；默认只保留因子面板。
+  save_parquet:
+    factor: true
+    group_return: false
+    simple_backtest: false
+    account_backtest: false
   # false 仅保存分组定义和汇总指标；true 额外保存曲线、动作、成交和换手明细。
   save_backtest_details: false
 
