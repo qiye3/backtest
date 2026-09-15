@@ -17,7 +17,7 @@ from src.cli import run
 from src.config import load_config
 from src.data.market_data import MarketData
 from src.group_return.evaluator import _prepare_return_horizons, evaluate
-from src.plotter.evaluation import _monthly_rank_ic
+from src.plotter.evaluation import _cumulative_rank_ic, _monthly_rank_ic
 
 matplotlib.use("Agg")
 
@@ -88,6 +88,13 @@ class EndToEndTests(unittest.TestCase):
         )
         self.assertEqual(monthly_rank_ic.index.astype(str).tolist(), ["2024-01", "2024-02"])
         np.testing.assert_allclose(monthly_rank_ic.to_numpy(), [0.2, -0.2])
+
+        cumulative_rank_ic = _cumulative_rank_ic(monthly_rank_ic)
+        self.assertEqual(
+            cumulative_rank_ic.index.strftime("%Y-%m-%d").tolist(),
+            ["2024-01-01", "2024-01-31", "2024-02-29"],
+        )
+        np.testing.assert_allclose(cumulative_rank_ic.to_numpy(), [0.0, 0.2, 0.0])
 
     def test_full_run_cache_reuse_and_plotter_restore(self) -> None:
         """运行完整链路，并在断开原始数据后复用两类缓存。"""

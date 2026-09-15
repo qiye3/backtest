@@ -190,6 +190,7 @@ def _plot_monthly_rank_ic(
     """绘制月均 RankIC 柱和右轴累计 RankIC。"""
     monthly_rank_ic = _monthly_rank_ic(horizon_ic)
     month_dates = monthly_rank_ic.index.to_timestamp()
+    cumulative_rank_ic = _cumulative_rank_ic(monthly_rank_ic)
     bar_colors = np.where(
         monthly_rank_ic.to_numpy() >= 0,
         "#6F93BA",
@@ -208,8 +209,8 @@ def _plot_monthly_rank_ic(
 
     cumulative_axis = axis.twinx()
     cumulative_line = cumulative_axis.plot(
-        month_dates,
-        monthly_rank_ic.cumsum(),
+        cumulative_rank_ic.index,
+        cumulative_rank_ic,
         color="#222222",
         linewidth=1.8,
         label="Cumulative RankIC",
@@ -256,6 +257,17 @@ def _monthly_rank_ic(horizon_ic: pd.DataFrame) -> pd.Series:
         .mean()
         .dropna()
     )
+
+
+def _cumulative_rank_ic(monthly_rank_ic: pd.Series) -> pd.Series:
+    """累计值从首月月初的零点开始，并在每个月末计入当月 RankIC。"""
+    first_month_start = monthly_rank_ic.index[0].to_timestamp(how="start")
+    month_ends = monthly_rank_ic.index.to_timestamp(how="end").normalize()
+    cumulative_dates = pd.DatetimeIndex([first_month_start, *month_ends])
+    cumulative_values = np.concatenate(
+        ([0.0], monthly_rank_ic.cumsum().to_numpy(dtype=float))
+    )
+    return pd.Series(cumulative_values, index=cumulative_dates)
 
 
 def _horizon_label(horizon_value: int, horizon_unit: str) -> str:
