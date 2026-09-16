@@ -10,6 +10,10 @@ from typing import Any
 import pandas as pd
 
 RESULT_FILE_NAME = "group_return.parquet"
+FACTOR_SUMMARY_FILE_NAMES = {
+    "daily": "factor_summary_daily.csv",
+    "weekly": "factor_summary_weekly.csv",
+}
 _SAVED_TABLES = [
     "definitions",
     "detail",
@@ -39,6 +43,33 @@ def save_evaluation_results(
         stored_result.to_parquet(output_path, index=False)
         output_paths[factor_name] = output_path
     return output_paths
+
+
+def save_factor_summaries(
+    factor_summaries: Mapping[str, pd.DataFrame],
+    output_root: str | Path,
+) -> dict[str, Path]:
+    """按调仓频率覆盖保存每因子一行的汇总表。"""
+    output_root = Path(output_root)
+    output_root.mkdir(parents=True, exist_ok=True)
+    output_paths = {}
+    for frequency, factor_summary in factor_summaries.items():
+        output_path = output_root / FACTOR_SUMMARY_FILE_NAMES[frequency]
+        factor_summary.to_csv(output_path, index=False)
+        output_paths[frequency] = output_path
+    return output_paths
+
+
+def load_factor_summaries(
+    output_root: str | Path,
+) -> dict[str, pd.DataFrame]:
+    """读取根目录中已经存在的各调仓频率汇总表。"""
+    output_root = Path(output_root)
+    return {
+        frequency: pd.read_csv(output_root / file_name)
+        for frequency, file_name in FACTOR_SUMMARY_FILE_NAMES.items()
+        if (output_root / file_name).exists()
+    }
 
 
 def load_evaluation_results(

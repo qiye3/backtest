@@ -14,12 +14,12 @@ from tqdm.auto import tqdm
 from src.backtest import run_backtests
 from src.backtest.io import (
     RESULT_FILE_NAMES,
+    build_metrics_summary,
     load_backtest_checkpoint,
     load_backtest_checkpoint_summaries,
     load_backtest_result,
     save_backtest_checkpoints,
     save_backtest_results,
-    save_metrics_summary,
 )
 from src.config import RunConfig, load_config, save_config_snapshot
 from src.data.market_data import MarketData
@@ -34,13 +34,19 @@ from src.factors.io import (
 )
 from src.group_return import evaluate_factors
 from src.group_return.io import (
-    RESULT_FILE_NAME as GROUP_RETURN_FILE_NAME,
-)
-from src.group_return.io import (
+    FACTOR_SUMMARY_FILE_NAMES,
     load_evaluation_result,
     load_evaluation_results,
-    load_evaluation_summaries,
+    load_factor_summaries,
     save_evaluation_results,
+    save_factor_summaries,
+)
+from src.group_return.io import (
+    RESULT_FILE_NAME as GROUP_RETURN_FILE_NAME,
+)
+from src.group_return.screening import (
+    build_factor_screening_summary,
+    build_frequency_summaries,
 )
 from src.overall_evaluation import evaluate_overall
 from src.plotter import plot_factor, plot_overall_evaluation
@@ -154,10 +160,9 @@ def _run_pipeline(config: RunConfig, progress: _CliProgress) -> RunSummary:
         stage_counts[stage_name] = len(backtest_paths)
         progress.complete(stage_name)
 
-    _save_metrics_checkpoint(
+    _save_factor_summary_checkpoint(
         config,
         factor_names,
-        group_return_source,
         cache_root,
     )
 
@@ -244,7 +249,16 @@ def _calculate_group_return_checkpoint(
         max_workers=config.raw["run"]["max_workers"],
         return_panel=return_panel,
     )
-    return save_evaluation_results(results, cache_root)
+    result_paths = save_evaluation_results(results, cache_root)
+    screening_summary = build_factor_screening_summary(
+        results,
+        config.raw["group_return"],
+    )
+    save_factor_summaries(
+        build_frequency_summaries(screening_summary, None),
+        cache_root,
+    )
+    return result_paths
 
 
 def _calculate_backtest_checkpoint(
@@ -284,37 +298,33 @@ def _calculate_backtest_checkpoint(
     return checkpoint_paths
 
 
-def _save_metrics_checkpoint(
+def _save_factor_summary_checkpoint(
     config: RunConfig,
     factor_names: Iterable[str],
-    group_return_source: Path,
     cache_root: Path,
-) -> Path | None:
-    """只读取指标表并生成本次根目录汇总 CSV。"""
-    completed_modes = [
-        mode
-        for mode in ["simple", "account"]
-        if config.raw["run"][f"{mode}_backtest"]
-    ]
-    if not completed_modes:
-        return None
-    evaluation_summaries = load_evaluation_summaries(
-        factor_names,
-        group_return_source,
-    )
-    backtest_summaries = {
-        mode: load_backtest_checkpoint_summaries(
+) -> dict[str, Path]:
+    """用本次评价或 simple G10 回测结果更新各频率汇总表。"""
+    group_return_completed = config.raw["run"]["group_return"]
+    simple_backtest_completed = config.raw["run"]["simple_backtest"]
+    if not group_return_completed and not simple_backtest_completed:
+        return {}
+
+    summary_root = cache_root if group_return_completed else config.output_root
+    existing_summaries = load_factor_summaries(summary_root)
+    backtest_summary = None
+    if simple_backtest_completed:
+        simple_results = load_backtest_checkpoint_summaries(
             factor_names,
             cache_root,
-            mode,
+            "simple",
         )
-        for mode in completed_modes
-    }
-    return save_metrics_summary(
-        backtest_summaries,
-        evaluation_summaries,
-        cache_root,
+        backtest_summary = build_metrics_summary(simple_results)
+    factor_summaries = build_frequency_summaries(
+        screening_summary=None,
+        backtest_summary=backtest_summary,
+        existing_summaries=existing_summaries,
     )
+    return save_factor_summaries(factor_summaries, cache_root)
 
 
 def _plot_factor_checkpoints(
@@ -464,13 +474,26 @@ def _publish_successful_run(
     )
     output_paths["config"] = (snapshot_path,)
 
-    metrics_path = cache_root / "metrics_summary.csv"
-    if metrics_path.exists():
-        published_metrics = _publish_file(
-            metrics_path,
-            config.output_root / metrics_path.name,
+    factor_summary_paths = [
+        cache_root / file_name
+        for file_name in FACTOR_SUMMARY_FILE_NAMES.values()
+        if (cache_root / file_name).exists()
+    ]
+    if factor_summary_paths:
+        published_factor_summaries = tuple(
+            _publish_file(
+                factor_summary_path,
+                config.output_root / factor_summary_path.name,
+            )
+            for factor_summary_path in factor_summary_paths
         )
-        output_paths["metrics_summary"] = (published_metrics,)
+        output_paths["factor_summary"] = published_factor_summaries
+        for legacy_summary_name in [
+            "metrics_summary.csv",
+            "factor_screening_summary.csv",
+            "factor_summary.csv",
+        ]:
+            (config.output_root / legacy_summary_name).unlink(missing_ok=True)
 
     for stage_name, file_name in [
         ("factors", FACTOR_FILE_NAME),

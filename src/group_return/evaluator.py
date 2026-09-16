@@ -1073,10 +1073,42 @@ def _evaluate_factor(
         "ic": ic_series,
         "summary": summary,
         "ic_summary": ic_summary,
+        "factor_quality": _summarize_factor_quality(
+            factor_values,
+            context.membership,
+        ),
         "members": members,
         "labels": labels,
         "sample_dates": context.sample_dates,
     }
+
+
+def _summarize_factor_quality(
+    factor_values: pd.DataFrame,
+    membership: pd.DataFrame,
+) -> pd.DataFrame:
+    """汇总股票池内因子非空覆盖率和有效值零值率。"""
+    membership_values = membership.to_numpy(dtype=bool)
+    factor_array = factor_values.to_numpy(dtype=float)
+    valid_factor = membership_values & np.isfinite(factor_array)
+    universe_observation_count = membership_values.sum()
+    valid_factor_count = valid_factor.sum()
+    factor_coverage_rate = (
+        valid_factor_count / universe_observation_count
+        if universe_observation_count > 0
+        else np.nan
+    )
+    factor_zero_rate = (
+        (valid_factor & (factor_array == 0)).sum() / valid_factor_count
+        if valid_factor_count > 0
+        else np.nan
+    )
+    return pd.DataFrame(
+        {
+            "factor_coverage_rate": [factor_coverage_rate],
+            "factor_zero_rate": [factor_zero_rate],
+        }
+    )
 
 
 # 按日期、未来周期、分组顺序批量构造收益明细表。

@@ -114,6 +114,59 @@ class EndToEndTests(unittest.TestCase):
             self.assertFalse(checkpoint_root.exists())
             self.assertTrue(pd.read_parquet(previous_factor_path).shape[0] > 0)
 
+    def test_factor_and_group_return_create_screening_summary(self) -> None:
+        """第一阶段应独立生成筛选汇总，不依赖任何回测阶段。"""
+        with TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory)
+            output_root = workspace / "output"
+            config_path = workspace / "screening_test.yaml"
+            config_data = self._test_config(output_root)
+            config_data["market_data"]["cache_root"] = str(
+                workspace / "market_cache"
+            )
+            config_data["run"].update(
+                {
+                    "simple_backtest": False,
+                    "account_backtest": False,
+                    "plotter": False,
+                    "overall_evaluation": False,
+                }
+            )
+            self._write_config(config_path, config_data)
+
+            run_summary = run(load_config(config_path))
+            daily_summary_path = output_root / "factor_summary_daily.csv"
+            weekly_summary_path = output_root / "factor_summary_weekly.csv"
+            daily_summary = pd.read_csv(daily_summary_path)
+            weekly_summary = pd.read_csv(weekly_summary_path)
+
+            self.assertEqual(
+                run_summary.stage_counts,
+                {"factors": 2, "group_return": 2},
+            )
+            self.assertEqual(len(daily_summary), len(FACTOR_NAMES))
+            self.assertEqual(len(weekly_summary), len(FACTOR_NAMES))
+            self.assertIn("rank_ic_mean_1d", daily_summary.columns)
+            self.assertEqual(
+                {
+                    "rank_ic_mean_1w",
+                    "rank_ic_mean_2w",
+                    "rank_ic_mean_4w",
+                    "q10_return_1w",
+                }
+                - set(weekly_summary.columns),
+                set(),
+            )
+            self.assertIn(
+                daily_summary_path.resolve(),
+                run_summary.output_paths["factor_summary"],
+            )
+            self.assertFalse((output_root / "metrics_summary.csv").exists())
+            self.assertFalse(
+                (output_root / "factor_screening_summary.csv").exists()
+            )
+            self.assertFalse((output_root / ".pipeline_cache").exists())
+
     def test_week_horizon_uses_calendar_week(self) -> None:
         """周周期按目标自然周回退，不等同于五个交易日。"""
         calendar = pd.bdate_range("2024-02-01", "2024-02-16").difference(
@@ -237,37 +290,45 @@ class EndToEndTests(unittest.TestCase):
                 full_results = run(config, show_progress=True)
             self.assertIn("100%", progress_output.getvalue())
             self.assertIn("overall_evaluation", progress_output.getvalue())
-            metrics_summary = pd.read_csv(
-                output_root / "metrics_summary.csv"
+            daily_summary = pd.read_csv(
+                output_root / "factor_summary_daily.csv"
             )
-            self.assertEqual(len(metrics_summary), 12)
-            self.assertEqual(
-                list(metrics_summary.columns),
-                [
-                    "factor_name",
-                    "rebalance_frequency",
-                    "rebalance_interval",
-                    "mode",
-                    "total_return",
-                    "annual_return",
-                    "sharpe",
-                    "turnover",
-                    "benchmark_total_return",
-                    "excess_total_return",
-                    "mean_ic",
-                    "icir",
-                ],
+            weekly_summary = pd.read_csv(
+                output_root / "factor_summary_weekly.csv"
             )
+            self.assertEqual(len(daily_summary), len(FACTOR_NAMES))
+            self.assertEqual(len(weekly_summary), len(FACTOR_NAMES))
             self.assertEqual(
-                set(metrics_summary["factor_name"]),
+                set(weekly_summary["factor_name"]),
                 set(FACTOR_NAMES),
             )
-            self.assertEqual(
-                set(metrics_summary["mode"]),
-                {"simple", "account"},
+            self.assertTrue(
+                weekly_summary[
+                    [
+                        "factor_coverage_rate",
+                        "rank_ic_mean_1w",
+                        "rank_icir_1w",
+                        "oriented_long_short_return_1w",
+                        "group_monotonicity_1w",
+                    ]
+                ].notna().all().all()
             )
             self.assertTrue(
-                metrics_summary[["mean_ic", "icir"]].notna().all().all()
+                weekly_summary[
+                    [
+                        "total_return_1w",
+                        "annual_return_1w",
+                        "sharpe_1w",
+                        "turnover_1w",
+                        "benchmark_total_return_1w",
+                        "excess_total_return_1w",
+                    ]
+                ].notna().all().all()
+            )
+            self.assertNotIn("mode", weekly_summary.columns)
+            self.assertFalse((output_root / "metrics_summary.csv").exists())
+            self.assertFalse(
+                (output_root / "factor_screening_summary.csv").exists()
             )
             self.assertTrue((output_root / "config_snapshot.yaml").is_file())
             evaluation = load_evaluation_results(
@@ -502,6 +563,13 @@ class EndToEndTests(unittest.TestCase):
 
             summary = run(load_config(config_path))
             self.assertEqual(summary.stage_counts["factors"], 2)
+            daily_summary = pd.read_csv(
+                output_root / "factor_summary_daily.csv"
+            )
+            self.assertEqual(len(daily_summary), len(FACTOR_NAMES))
+            self.assertIn("sharpe_1d", daily_summary.columns)
+            self.assertIn("sharpe_5d", daily_summary.columns)
+            self.assertNotIn("mode", daily_summary.columns)
             factor_panel = load_factor_panels(output_root)["return_10d"]
             backtest_results = {
                 mode: load_backtest_results(
