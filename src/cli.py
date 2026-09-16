@@ -14,8 +14,10 @@ from tqdm.auto import tqdm
 from src.backtest import run_backtests
 from src.backtest.io import (
     RESULT_FILE_NAMES,
+    load_backtest_checkpoint,
+    load_backtest_checkpoint_summaries,
     load_backtest_result,
-    load_backtest_summaries,
+    save_backtest_checkpoints,
     save_backtest_results,
     save_metrics_summary,
 )
@@ -156,7 +158,6 @@ def _run_pipeline(config: RunConfig, progress: _CliProgress) -> RunSummary:
         config,
         factor_names,
         group_return_source,
-        backtest_sources,
         cache_root,
     )
 
@@ -253,7 +254,7 @@ def _calculate_backtest_checkpoint(
     cache_root: Path,
     mode: str,
 ) -> dict[str, Path]:
-    """从磁盘加载因子，计算一类回测并保存完整绘图明细。"""
+    """逐因子回测并保存 checkpoint，因子内部任务仍按线程数并行。"""
     factor_panels = load_factor_panels(factor_source)
     return_panel = (
         load_return_panel(config.external_return_path)
@@ -261,28 +262,32 @@ def _calculate_backtest_checkpoint(
         else None
     )
     section_name = f"{mode}_backtest"
-    results = run_backtests(
-        factor_panels=factor_panels,
-        market_data=market_data,
-        settings=config.raw[section_name],
-        metrics_settings=config.raw["metrics"],
-        mode=mode,
-        max_workers=config.raw["run"]["max_workers"],
-        return_panel=return_panel,
-    )
-    return save_backtest_results(
-        results,
-        cache_root,
-        mode,
-        save_details=True,
-    )
+    max_workers = config.raw["run"]["max_workers"]
+    checkpoint_paths = {}
+    for factor_name, factor_panel in factor_panels.items():
+        factor_results = run_backtests(
+            factor_panels={factor_name: factor_panel},
+            market_data=market_data,
+            settings=config.raw[section_name],
+            metrics_settings=config.raw["metrics"],
+            mode=mode,
+            max_workers=max_workers,
+            return_panel=return_panel,
+        )
+        checkpoint_paths.update(
+            save_backtest_checkpoints(
+                factor_results,
+                cache_root,
+                mode,
+            )
+        )
+    return checkpoint_paths
 
 
 def _save_metrics_checkpoint(
     config: RunConfig,
     factor_names: Iterable[str],
     group_return_source: Path,
-    backtest_sources: Mapping[str, Path],
     cache_root: Path,
 ) -> Path | None:
     """只读取指标表并生成本次根目录汇总 CSV。"""
@@ -298,9 +303,9 @@ def _save_metrics_checkpoint(
         group_return_source,
     )
     backtest_summaries = {
-        mode: load_backtest_summaries(
+        mode: load_backtest_checkpoint_summaries(
             factor_names,
-            backtest_sources[mode],
+            cache_root,
             mode,
         )
         for mode in completed_modes
@@ -331,12 +336,14 @@ def _plot_factor_checkpoints(
                 factor_name,
                 group_return_source,
             ),
-            simple_backtest_result=load_backtest_result(
+            simple_backtest_result=_load_backtest_for_plot(
+                config,
                 factor_name,
                 backtest_sources["simple"],
                 "simple",
             ),
-            account_backtest_result=load_backtest_result(
+            account_backtest_result=_load_backtest_for_plot(
+                config,
                 factor_name,
                 backtest_sources["account"],
                 "account",
@@ -344,6 +351,18 @@ def _plot_factor_checkpoints(
             evaluation_settings=_evaluation_plot_settings(config),
             backtest_settings=_backtest_plot_settings(config),
         )
+
+
+def _load_backtest_for_plot(
+    config: RunConfig,
+    factor_name: str,
+    result_source: Path,
+    mode: str,
+) -> dict[str, Any] | None:
+    """按本次阶段状态读取内部 checkpoint 或既有最终结果。"""
+    if config.raw["run"][f"{mode}_backtest"]:
+        return load_backtest_checkpoint(factor_name, result_source, mode)
+    return load_backtest_result(factor_name, result_source, mode)
 
 
 def _evaluation_plot_settings(config: RunConfig) -> dict[str, Any]:
@@ -409,8 +428,6 @@ def _prepare_retained_checkpoints(
 ) -> Path:
     """按最终明细开关在发布前生成可直接替换的 Parquet。"""
     retained_root = cache_root / ".retained"
-    if config.raw["output"]["save_backtest_details"]:
-        return retained_root
     for mode in ["simple", "account"]:
         stage_name = f"{mode}_backtest"
         if not (
@@ -419,12 +436,16 @@ def _prepare_retained_checkpoints(
         ):
             continue
         for factor_name in factor_names:
-            result = load_backtest_result(factor_name, cache_root, mode)
+            result = load_backtest_checkpoint(
+                factor_name,
+                cache_root,
+                mode,
+            )
             save_backtest_results(
                 {factor_name: result},
                 retained_root,
                 mode,
-                save_details=False,
+                save_details=config.raw["output"]["save_backtest_details"],
             )
     return retained_root
 
@@ -470,7 +491,6 @@ def _publish_successful_run(
         source_root = (
             retained_root
             if stage_name in {"simple_backtest", "account_backtest"}
-            and not config.raw["output"]["save_backtest_details"]
             else cache_root
         )
         published = tuple(

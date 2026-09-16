@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pickle
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,10 @@ from src.backtest.events import make_curve_views
 RESULT_FILE_NAMES = {
     "simple": "simple_backtest.parquet",
     "account": "account_backtest.parquet",
+}
+CHECKPOINT_FILE_NAMES = {
+    "simple": "simple_backtest.checkpoint.pkl",
+    "account": "account_backtest.checkpoint.pkl",
 }
 
 
@@ -126,6 +131,28 @@ def save_backtest_results(
     return output_paths
 
 
+def save_backtest_checkpoints(
+    results: Mapping[str, Mapping[str, Any]],
+    output_root: str | Path,
+    mode: str,
+) -> dict[str, Path]:
+    """逐因子流式保存完整内部 checkpoint，避免拼接回测明细。"""
+    output_root = Path(output_root)
+    output_paths = {}
+    for factor_name, result in results.items():
+        factor_directory = output_root / factor_name
+        factor_directory.mkdir(parents=True, exist_ok=True)
+        output_path = factor_directory / CHECKPOINT_FILE_NAMES[mode]
+        with output_path.open("wb") as checkpoint_file:
+            pickle.dump(
+                result,
+                checkpoint_file,
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+        output_paths[factor_name] = output_path
+    return output_paths
+
+
 def _pack_backtest_details(
     result: Mapping[str, Any],
     rebalance_frequency: str,
@@ -199,6 +226,36 @@ def load_backtest_result(
     return load_backtest_results([factor_name], output_root, mode).get(
         factor_name
     )
+
+
+def load_backtest_checkpoint(
+    factor_name: str,
+    output_root: str | Path,
+    mode: str,
+) -> dict[str, Any]:
+    """加载流水线自身生成的单因子完整回测 checkpoint。"""
+    checkpoint_path = (
+        Path(output_root) / factor_name / CHECKPOINT_FILE_NAMES[mode]
+    )
+    with checkpoint_path.open("rb") as checkpoint_file:
+        return pickle.load(checkpoint_file)
+
+
+def load_backtest_checkpoint_summaries(
+    factor_names: Iterable[str],
+    output_root: str | Path,
+    mode: str,
+) -> dict[str, dict[str, Any]]:
+    """逐因子读取内部 checkpoint，并仅保留根目录汇总所需指标。"""
+    summaries = {}
+    for factor_name in factor_names:
+        checkpoint = load_backtest_checkpoint(
+            factor_name,
+            output_root,
+            mode,
+        )
+        summaries[factor_name] = {"metrics": checkpoint["metrics"]}
+    return summaries
 
 
 def load_backtest_summaries(
