@@ -20,7 +20,9 @@ from src.backtest.io import load_backtest_results, save_backtest_results
 from src.cli import run
 from src.config import load_config
 from src.data.market_data import MarketData
+from src.factors.io import load_factor_panels
 from src.group_return.evaluator import _prepare_return_horizons, evaluate
+from src.group_return.io import load_evaluation_results
 from src.plotter.evaluation import _monthly_rank_ic, _plot_monthly_rank_ic
 
 matplotlib.use("Agg")
@@ -64,6 +66,53 @@ class EndToEndTests(unittest.TestCase):
 
             self.assertNotIn("future_return_days", config.raw["group_return"])
             self.assertEqual(config.raw["group_return"]["future_return_weeks"], [1])
+
+    def test_failed_run_keeps_checkpoint_and_previous_results(self) -> None:
+        """中间阶段失败时保留 checkpoint，且不覆盖上次成功结果。"""
+        with TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory)
+            output_root = workspace / "output"
+            config_path = workspace / "failure_test.yaml"
+            config_data = self._test_config(output_root)
+            config_data["market_data"]["cache_root"] = str(
+                workspace / "market_cache"
+            )
+            config_data["run"].update(
+                {
+                    "group_return": False,
+                    "account_backtest": False,
+                    "plotter": False,
+                    "overall_evaluation": False,
+                }
+            )
+            previous_factor_path = output_root / "return_10d" / "factor.parquet"
+            previous_factor_path.parent.mkdir(parents=True)
+            previous_factor_path.write_bytes(b"previous successful result")
+            self._write_config(config_path, config_data)
+
+            with patch(
+                "src.cli.run_backtests",
+                side_effect=RuntimeError("injected backtest failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "injected"):
+                    run(load_config(config_path))
+
+            checkpoint_root = output_root / ".pipeline_cache"
+            self.assertTrue(
+                (checkpoint_root / "return_10d" / "factor.parquet").is_file()
+            )
+            self.assertEqual(
+                previous_factor_path.read_bytes(),
+                b"previous successful result",
+            )
+
+            config_data["run"]["simple_backtest"] = False
+            self._write_config(config_path, config_data)
+            summary = run(load_config(config_path))
+
+            self.assertEqual(summary.stage_counts, {"factors": 2})
+            self.assertFalse(checkpoint_root.exists())
+            self.assertTrue(pd.read_parquet(previous_factor_path).shape[0] > 0)
 
     def test_week_horizon_uses_calendar_week(self) -> None:
         """周周期按目标自然周回退，不等同于五个交易日。"""
@@ -221,7 +270,10 @@ class EndToEndTests(unittest.TestCase):
                 metrics_summary[["mean_ic", "icir"]].notna().all().all()
             )
             self.assertTrue((output_root / "config_snapshot.yaml").is_file())
-            evaluation = full_results["group_return"]["return_10d"]
+            evaluation = load_evaluation_results(
+                ["return_10d"],
+                output_root,
+            )["return_10d"]
             self.assertEqual(
                 list(
                     evaluation["summary"][["horizon_value", "horizon_unit"]]
@@ -236,7 +288,7 @@ class EndToEndTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(
-                list(full_results),
+                list(full_results.stage_counts),
                 [
                     "factors",
                     "group_return",
@@ -253,19 +305,11 @@ class EndToEndTests(unittest.TestCase):
                 },
                 OVERALL_FIGURE_FILES,
             )
-            overall_result = full_results["overall_evaluation"]
             self.assertEqual(
-                overall_result["factor_correlation"].shape,
-                (len(FACTOR_NAMES), len(FACTOR_NAMES)),
+                full_results.stage_counts["overall_evaluation"],
+                len(FACTOR_NAMES),
             )
-            self.assertEqual(
-                len(overall_result["factor_ic"]),
-                len(FACTOR_NAMES) * 4,
-            )
-            self.assertEqual(
-                len(overall_result["factor_return"]),
-                len(FACTOR_NAMES) * 4,
-            )
+            self.assertFalse((output_root / ".pipeline_cache").exists())
             self._assert_outputs(output_root)
 
             cache_directory = Path(config_data["market_data"]["cache_root"])
@@ -326,8 +370,16 @@ class EndToEndTests(unittest.TestCase):
                     "overall_evaluation": False,
                 }
             )
+            config_data["output"]["save_backtest_details"] = True
+            config_data["output"]["save_parquet"].update(
+                {
+                    "group_return": True,
+                    "simple_backtest": True,
+                }
+            )
             self._write_config(config_path, config_data)
-            price_results = run(load_config(config_path))
+            run(load_config(config_path))
+            price_output = Path(config_data["output"]["root"])
 
             market_data = MarketData.from_yaml(config_path)
             close_prices = market_data.get_panel(
@@ -344,10 +396,17 @@ class EndToEndTests(unittest.TestCase):
             }
             config_data["simple_backtest"]["benchmark"]["source"] = "zero"
             self._write_config(config_path, config_data)
-            external_results = run(load_config(config_path))
+            run(load_config(config_path))
+            external_output = Path(config_data["output"]["root"])
 
-            price_evaluation = price_results["group_return"]["return_10d"]
-            external_evaluation = external_results["group_return"]["return_10d"]
+            price_evaluation = load_evaluation_results(
+                ["return_10d"],
+                price_output,
+            )["return_10d"]
+            external_evaluation = load_evaluation_results(
+                ["return_10d"],
+                external_output,
+            )["return_10d"]
             np.testing.assert_allclose(
                 price_evaluation["detail"]["group_return"],
                 external_evaluation["detail"]["group_return"],
@@ -359,12 +418,20 @@ class EndToEndTests(unittest.TestCase):
                 equal_nan=True,
             )
 
-            price_curve = price_results["simple_backtest"]["return_10d"][
-                "periods"
-            ][1]["groups"]["G10"]["curves"]["daily"]
-            external_curve = external_results["simple_backtest"]["return_10d"][
-                "periods"
-            ][1]["groups"]["G10"]["curves"]["daily"]
+            price_curve = load_backtest_results(
+                ["return_10d"],
+                price_output,
+                "simple",
+            )["return_10d"]["periods"][1]["groups"]["G10"]["curves"][
+                "daily"
+            ]
+            external_curve = load_backtest_results(
+                ["return_10d"],
+                external_output,
+                "simple",
+            )["return_10d"]["periods"][1]["groups"]["G10"]["curves"][
+                "daily"
+            ]
             np.testing.assert_allclose(
                 price_curve["cumulative_return"],
                 external_curve["cumulative_return"],
@@ -376,7 +443,7 @@ class EndToEndTests(unittest.TestCase):
                 0.0,
             )
 
-            factor_panel = external_results["factors"]["return_10d"]
+            factor_panel = load_factor_panels(external_output)["return_10d"]
             excess_settings = deepcopy(load_config(config_path).raw["group_return"])
             excess_settings["target"] = {
                 "type": "benchmark_excess_return",
@@ -433,10 +500,15 @@ class EndToEndTests(unittest.TestCase):
             config_data["metrics"]["return_frequency"] = "rebalance"
             self._write_config(config_path, config_data)
 
-            stage_results = run(load_config(config_path))
-            factor_panel = stage_results["factors"]["return_10d"]
+            summary = run(load_config(config_path))
+            self.assertEqual(summary.stage_counts["factors"], 2)
+            factor_panel = load_factor_panels(output_root)["return_10d"]
             backtest_results = {
-                mode: stage_results[f"{mode}_backtest"]["return_10d"]
+                mode: load_backtest_results(
+                    ["return_10d"],
+                    output_root,
+                    mode,
+                )["return_10d"]
                 for mode in ["simple", "account"]
             }
             for backtest_result in backtest_results.values():
@@ -569,7 +641,10 @@ class EndToEndTests(unittest.TestCase):
                 side_effect=AssertionError("缓存命中时不应读取指数成员"),
             ),
         ):
-            self.assertEqual(list(run(load_config(config_path))), ["factors"])
+            self.assertEqual(
+                list(run(load_config(config_path)).stage_counts),
+                ["factors"],
+            )
 
     def _run_plotter_from_results(
         self,
@@ -590,7 +665,10 @@ class EndToEndTests(unittest.TestCase):
             }
         )
         self._write_config(config_path, config_data)
-        self.assertEqual(list(run(load_config(config_path))), ["plotter"])
+        self.assertEqual(
+            list(run(load_config(config_path)).stage_counts),
+            ["plotter"],
+        )
 
     def _run_without_derived_parquets(
         self,
@@ -618,7 +696,7 @@ class EndToEndTests(unittest.TestCase):
         )
         self._write_config(config_path, config_data)
         self.assertEqual(
-            list(run(load_config(config_path))),
+            list(run(load_config(config_path)).stage_counts),
             ["group_return", "simple_backtest", "account_backtest"],
         )
 

@@ -185,9 +185,15 @@ class RunConfig:
     external_return_path: Path | None
 
 
-def save_config_snapshot(config: RunConfig) -> Path:
+def save_config_snapshot(
+    config: RunConfig,
+    output_root: str | Path | None = None,
+) -> Path:
     """把本次实际使用且已补全默认值的完整配置保存到输出根目录。"""
-    output_path = config.output_root / "config_snapshot.yaml"
+    snapshot_root = (
+        config.output_root if output_root is None else Path(output_root)
+    )
+    output_path = snapshot_root / "config_snapshot.yaml"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
         yaml.safe_dump(config.raw, allow_unicode=True, sort_keys=False),

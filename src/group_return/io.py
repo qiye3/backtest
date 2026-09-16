@@ -65,6 +65,32 @@ def load_evaluation_results(
     return results
 
 
+def load_evaluation_result(
+    factor_name: str,
+    output_root: str | Path,
+) -> dict[str, Any] | None:
+    """加载一个因子已经存在的完整评价结果。"""
+    return load_evaluation_results([factor_name], output_root).get(factor_name)
+
+
+def load_evaluation_summaries(
+    factor_names: Iterable[str],
+    output_root: str | Path,
+) -> dict[str, dict[str, pd.DataFrame]]:
+    """只加载汇总指标所需的各因子 IC 汇总表。"""
+    output_root = Path(output_root)
+    summaries = {}
+    for factor_name in factor_names:
+        result_path = output_root / factor_name / RESULT_FILE_NAME
+        if not result_path.exists():
+            continue
+        stored_result = pd.read_parquet(result_path)
+        summaries[factor_name] = {
+            "ic_summary": _unpack_frame(stored_result, "ic_summary")
+        }
+    return summaries
+
+
 def _pack_frame(frame: pd.DataFrame, record_type: str) -> pd.DataFrame:
     """把一张结果表及其列结构编码成可合并记录。"""
     column_names = json.dumps(list(frame.columns), ensure_ascii=False)

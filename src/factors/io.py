@@ -41,6 +41,27 @@ def load_factor_panels(
     }
 
 
+def load_factor_panel(
+    factor_name: str,
+    output_root: str | Path,
+) -> pd.DataFrame:
+    """从结果根目录恢复一个标准因子面板。"""
+    result_path = Path(output_root) / factor_name / FACTOR_FILE_NAME
+    return pd.read_parquet(result_path)
+
+
+def find_factor_names(output_root: str | Path) -> tuple[str, ...]:
+    """按目录名排序列出已经保存标准面板的因子。"""
+    output_root = Path(output_root)
+    factor_names = tuple(
+        path.parent.name
+        for path in sorted(output_root.glob(f"*/{FACTOR_FILE_NAME}"))
+    )
+    if not factor_names:
+        raise FileNotFoundError(f"没有已保存的因子面板: {output_root}")
+    return factor_names
+
+
 def _factor_directory(output_root: Path, factor_name: str) -> Path:
     """检查用于目录名的 Factor 名称并返回固定结果目录。"""
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", factor_name):

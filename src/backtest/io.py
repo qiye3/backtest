@@ -190,6 +190,36 @@ def load_backtest_results(
     return results
 
 
+def load_backtest_result(
+    factor_name: str,
+    output_root: str | Path,
+    mode: str,
+) -> dict[str, Any] | None:
+    """加载一个因子已经存在的一类完整回测结果。"""
+    return load_backtest_results([factor_name], output_root, mode).get(
+        factor_name
+    )
+
+
+def load_backtest_summaries(
+    factor_names: Iterable[str],
+    output_root: str | Path,
+    mode: str,
+) -> dict[str, dict[str, Any]]:
+    """只加载根目录指标汇总所需的回测指标。"""
+    output_root = Path(output_root)
+    summaries = {}
+    for factor_name in factor_names:
+        result_path = output_root / factor_name / RESULT_FILE_NAMES[mode]
+        if not result_path.exists():
+            continue
+        stored_result = pd.read_parquet(result_path)
+        summaries[factor_name] = {
+            "metrics": _unpack_frame(stored_result, "metrics")
+        }
+    return summaries
+
+
 def _restore_backtest_result(
     stored_result: pd.DataFrame,
 ) -> dict[str, Any]:
