@@ -2,7 +2,7 @@
 market_data:
   # 原始数据根目录；可使用绝对路径，或使用相对本 YAML 文件的相对路径。
   source_root: /app/openclaw/.openclaw/workspace/.cowork/workspace/default/【指数增强策略】数据获取/data
-  # Parquet 缓存根目录；实际缓存写入其下以 YAML 文件名命名的 market_data 子目录。
+  # 来源级共享缓存目录；多份 YAML 指向同一路径时复用同名 Parquet。
   cache_root: ../../data
   # 面板开始日期，格式为 YYYY-MM-DD；因子需要历史窗口时应提前覆盖预热期。
   start_date: "2022-01-01"

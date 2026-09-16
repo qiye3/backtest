@@ -8,6 +8,7 @@ from copy import deepcopy
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import matplotlib
 import numpy as np
@@ -267,9 +268,7 @@ class EndToEndTests(unittest.TestCase):
             )
             self._assert_outputs(output_root)
 
-            cache_directory = Path(
-                config_data["market_data"]["cache_root"]
-            ) / config_path.stem
+            cache_directory = Path(config_data["market_data"]["cache_root"])
             cache_times = {
                 path.name: path.stat().st_mtime_ns
                 for path in cache_directory.glob("*.parquet")
@@ -280,6 +279,17 @@ class EndToEndTests(unittest.TestCase):
                     "index_price.parquet",
                     "index_membership.parquet",
                     "stock_quote.parquet",
+                },
+            )
+            self.assertEqual(
+                {
+                    path.name
+                    for path in cache_directory.glob("*.meta.json")
+                },
+                {
+                    "index_price.meta.json",
+                    "index_membership.meta.json",
+                    "stock_quote.meta.json",
                 },
             )
 
@@ -535,11 +545,8 @@ class EndToEndTests(unittest.TestCase):
         config_path: Path,
         source_config: dict,
     ) -> None:
-        """断开原始数据路径后只运行 Factor，确认市场缓存可复用。"""
+        """禁止读取原始数据后只运行 Factor，确认市场缓存可复用。"""
         config_data = deepcopy(source_config)
-        config_data["market_data"]["source_root"] = str(
-            config_path.parent / "missing_raw_data"
-        )
         config_data["run"].update(
             {
                 "factors": True,
@@ -552,7 +559,17 @@ class EndToEndTests(unittest.TestCase):
             }
         )
         self._write_config(config_path, config_data)
-        self.assertEqual(list(run(load_config(config_path))), ["factors"])
+        with (
+            patch(
+                "src.data.market_data.load_data",
+                side_effect=AssertionError("缓存命中时不应读取原始来源"),
+            ),
+            patch(
+                "src.data.market_data.load_index_members",
+                side_effect=AssertionError("缓存命中时不应读取指数成员"),
+            ),
+        ):
+            self.assertEqual(list(run(load_config(config_path))), ["factors"])
 
     def _run_plotter_from_results(
         self,

@@ -16,7 +16,8 @@ import pandas as pd
 import yaml
 
 from src.data.cache import (
-    load_source_cache,
+    load_source_metadata,
+    load_source_panel,
     resolve_market_cache_directory,
     save_source_cache,
 )
@@ -117,25 +118,25 @@ class MarketData:
         )
         source_configs = market_data_config["sources"]
 
-        index_price_panel, trading_calendar = _load_index_price_panel(
+        index_price_panel, index_price_metadata = _load_index_price_panel(
             data_root=data_root,
             cache_directory=cache_directory,
             source_config=source_configs["index_price"],
             benchmark_index=benchmark_index,
+            universe_indices=universe_indices,
             start_date=start_date,
             end_date=end_date,
             refresh=refresh,
         )
+        shared_calendar = pd.DatetimeIndex(index_price_panel.index, name="date")
         membership_panel, universe_codes = _load_membership_panel(
             data_root=data_root,
             cache_directory=cache_directory,
             universe_indices=universe_indices,
-            trading_calendar=trading_calendar,
+            trading_calendar=shared_calendar,
+            start_date=pd.Timestamp(index_price_metadata["start_date"]),
+            end_date=pd.Timestamp(index_price_metadata["end_date"]),
             refresh=refresh,
-        )
-        membership = _merge_universe_membership(
-            membership_panel,
-            universe_codes,
         )
 
         source_panels = {
@@ -152,10 +153,33 @@ class MarketData:
                 source_config=source_config,
                 start_date=start_date,
                 end_date=end_date,
-                trading_calendar=trading_calendar,
+                trading_calendar=shared_calendar,
                 universe_codes=universe_codes,
+                universe_indices=universe_indices,
                 refresh=refresh,
             )
+
+        trading_calendar = shared_calendar[
+            (shared_calendar >= start_date) & (shared_calendar <= end_date)
+        ]
+        requested_source_configs = dict(source_configs)
+        requested_source_configs[MEMBERSHIP_SOURCE] = {
+            "fields": ["membership"],
+            "codes": universe_indices,
+        }
+        source_panels = {
+            source_name: _slice_source_panel(
+                source_name=source_name,
+                source_panel=source_panel,
+                source_config=requested_source_configs[source_name],
+                trading_calendar=trading_calendar,
+            )
+            for source_name, source_panel in source_panels.items()
+        }
+        membership = _merge_universe_membership(
+            source_panels[MEMBERSHIP_SOURCE],
+            universe_codes,
+        )
 
         return cls(
             source_panels=source_panels,
@@ -302,96 +326,202 @@ def _validate_market_data_config(market_data_config: Mapping[str, Any]) -> None:
                 )
 
 
+# ===================== 共享缓存请求 ===================== #
+
+SEMANTIC_METADATA_KEYS = (
+    "source_root",
+    "universe_indices",
+    "filters",
+    "forecast_year_offset",
+)
+
+
+def _source_metadata(
+    data_root: Path,
+    source_config: Mapping[str, Any],
+    universe_indices: Sequence[str],
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+) -> dict[str, Any]:
+    """把会影响来源面板内容的配置规范为可持久化 metadata。"""
+    filters = {
+        str(filter_name): str(filter_value)
+        for filter_name, filter_value in sorted(
+            source_config.get("filters", {}).items()
+        )
+    }
+    forecast_year_offset = source_config.get("forecast_year_offset")
+    if forecast_year_offset is not None:
+        forecast_year_offset = int(forecast_year_offset)
+
+    return {
+        "source_root": str(data_root),
+        "start_date": start_date.strftime("%Y-%m-%d"),
+        "end_date": end_date.strftime("%Y-%m-%d"),
+        "fields": list(dict.fromkeys(str(field) for field in source_config["fields"])),
+        "codes": list(dict.fromkeys(str(code) for code in source_config.get("codes", ()))),
+        "universe_indices": sorted(str(code) for code in universe_indices),
+        "filters": filters,
+        "forecast_year_offset": forecast_year_offset,
+    }
+
+
+def _prepare_source_cache(
+    cache_directory: Path,
+    source_name: str,
+    requested_metadata: Mapping[str, Any],
+    refresh: bool,
+) -> tuple[pd.DataFrame | None, dict[str, Any], bool]:
+    """判断来源缓存是否命中，并生成必要重建时使用的并集范围。"""
+    cached_metadata = load_source_metadata(cache_directory, source_name)
+    if cached_metadata is None:
+        return None, dict(requested_metadata), True
+
+    semantic_conflicts = [
+        key
+        for key in SEMANTIC_METADATA_KEYS
+        if cached_metadata[key] != requested_metadata[key]
+    ]
+    if semantic_conflicts:
+        if refresh:
+            return None, dict(requested_metadata), True
+        conflict_names = ", ".join(semantic_conflicts)
+        raise ValueError(f"共享缓存来源口径不一致: {source_name}: {conflict_names}")
+
+    build_metadata = dict(requested_metadata)
+    build_start = min(
+        pd.Timestamp(cached_metadata["start_date"]),
+        pd.Timestamp(requested_metadata["start_date"]),
+    )
+    build_end = max(
+        pd.Timestamp(cached_metadata["end_date"]),
+        pd.Timestamp(requested_metadata["end_date"]),
+    )
+    build_metadata["start_date"] = build_start.strftime("%Y-%m-%d")
+    build_metadata["end_date"] = build_end.strftime("%Y-%m-%d")
+    for collection_name in ("fields", "codes"):
+        build_metadata[collection_name] = list(
+            dict.fromkeys(
+                [
+                    *cached_metadata[collection_name],
+                    *requested_metadata[collection_name],
+                ]
+            )
+        )
+
+    needs_expansion = any(
+        build_metadata[key] != cached_metadata[key]
+        for key in ("start_date", "end_date", "fields", "codes")
+    )
+    rebuild = refresh or needs_expansion
+    if rebuild:
+        return None, build_metadata, True
+    cached_panel = load_source_panel(cache_directory, source_name)
+    return cached_panel, build_metadata, False
+
+
+def _build_source_config(
+    source_config: Mapping[str, Any],
+    build_metadata: Mapping[str, Any],
+) -> dict[str, Any]:
+    """用缓存并集字段和代码生成一次原始数据读取配置。"""
+    build_config = dict(source_config)
+    build_config["fields"] = build_metadata["fields"]
+    if build_metadata["codes"]:
+        build_config["codes"] = build_metadata["codes"]
+    return build_config
+
+
 # ===================== 基准日历和历史股票池 ===================== #
 
-# 优先读取指数行情缓存，未命中时先用原始行情建立交易日历。
 def _load_index_price_panel(
     data_root: Path,
     cache_directory: Path,
     source_config: Mapping[str, Any],
     benchmark_index: str,
+    universe_indices: Sequence[str],
     start_date: pd.Timestamp,
     end_date: pd.Timestamp,
     refresh: bool,
-) -> tuple[pd.DataFrame, pd.DatetimeIndex]:
-    """
-    读取或构建指数行情面板和交易日日历。
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """读取共享指数行情，必要时按新旧请求的并集重建。"""
+    requested_metadata = _source_metadata(
+        data_root=data_root,
+        source_config=source_config,
+        universe_indices=universe_indices,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    cached_panel, build_metadata, rebuild = _prepare_source_cache(
+        cache_directory=cache_directory,
+        source_name="index_price",
+        requested_metadata=requested_metadata,
+        refresh=refresh,
+    )
+    if not rebuild:
+        return cached_panel, build_metadata
 
-    输入：
-    - data_root、cache_directory：原始数据根和当前配置缓存目录。
-    - source_config：``index_price`` 的代码和字段配置。
-    - benchmark_index：用于定义交易日的指数代码。
-    - start_date、end_date：面板日期范围。
-    - refresh：是否跳过已有缓存强制重建。
-
-    输出：
-    - 返回 ``(指数行情来源面板, 交易日日历)``。
-
-    功能和用途：
-    - 缓存命中时直接使用其索引作为日历；重建时从基准指数原始记录提取真实交易日。
-    - 指数行情必须先于其他来源完成，因为所有后续面板都依赖同一时间轴。
-    """
-    cached_panel = None
-    if not refresh:
-        cached_panel = load_source_cache(cache_directory, "index_price")
-    if cached_panel is not None:
-        trading_calendar = pd.DatetimeIndex(cached_panel.index, name="date")
-        return cached_panel, trading_calendar
-
+    build_config = _build_source_config(source_config, build_metadata)
+    build_start = pd.Timestamp(build_metadata["start_date"])
+    build_end = pd.Timestamp(build_metadata["end_date"])
     index_records = load_data(
         data_root=data_root,
         source_name="index_price",
-        source_config=source_config,
-        start_date=start_date,
-        end_date=end_date,
+        source_config=build_config,
+        start_date=build_start,
+        end_date=build_end,
         universe_codes=(),
     )
     trading_calendar = build_trading_calendar(
         index_records=index_records,
         benchmark_index=benchmark_index,
-        start_date=start_date,
-        end_date=end_date,
+        start_date=build_start,
+        end_date=build_end,
     )
-    index_codes = tuple(str(code) for code in source_config["codes"])
     index_price_panel = build_source_panel(
         source_name="index_price",
         source_data=index_records,
-        source_fields=source_config["fields"],
+        source_fields=build_config["fields"],
         trading_calendar=trading_calendar,
-        asset_codes=index_codes,
+        asset_codes=build_config["codes"],
     )
-    save_source_cache(cache_directory, "index_price", index_price_panel)
-    return index_price_panel, trading_calendar
+    save_source_cache(
+        cache_directory,
+        "index_price",
+        index_price_panel,
+        build_metadata,
+    )
+    return index_price_panel, build_metadata
 
 
-# 读取或构建历史指数成员面板，并确定全部个股来源的列范围。
 def _load_membership_panel(
     data_root: Path,
     cache_directory: Path,
     universe_indices: Sequence[str],
     trading_calendar: pd.DatetimeIndex,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
     refresh: bool,
 ) -> tuple[pd.DataFrame, tuple[str, ...]]:
-    """
-    读取或构建配置股票池的历史成员面板。
-
-    输入：
-    - data_root、cache_directory：原始数据根和当前配置缓存目录。
-    - universe_indices：中证800和中证1000指数代码及顺序。
-    - trading_calendar：需要展开成员区间的交易日历。
-    - refresh：是否强制重新读取成员 CSV。
-
-    输出：
-    - 返回 ``(成员来源面板, 历史成员股票代码元组)``。
-
-    功能和用途：
-    - 缓存命中时从列索引恢复股票范围；未命中时读取成员区间并按左闭右开展开。
-    - 历史成员并集成为所有个股行情和因子原始字段的统一列范围。
-    """
-    cached_panel = None
-    if not refresh:
-        cached_panel = load_source_cache(cache_directory, MEMBERSHIP_SOURCE)
-    if cached_panel is not None:
+    """读取或重建覆盖共享交易日历的指数历史成员面板。"""
+    source_config = {
+        "fields": ["membership"],
+        "codes": list(universe_indices),
+    }
+    requested_metadata = _source_metadata(
+        data_root=data_root,
+        source_config=source_config,
+        universe_indices=universe_indices,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    cached_panel, build_metadata, rebuild = _prepare_source_cache(
+        cache_directory=cache_directory,
+        source_name=MEMBERSHIP_SOURCE,
+        requested_metadata=requested_metadata,
+        refresh=refresh,
+    )
+    if not rebuild:
         universe_codes = tuple(
             cached_panel.columns.get_level_values("asset_code").unique()
         )
@@ -399,34 +529,30 @@ def _load_membership_panel(
 
     member_intervals = load_index_members(data_root, universe_indices)
     universe_codes = tuple(sorted(member_intervals["asset_code"].unique()))
+    build_calendar = trading_calendar[
+        (trading_calendar >= pd.Timestamp(build_metadata["start_date"]))
+        & (trading_calendar <= pd.Timestamp(build_metadata["end_date"]))
+    ]
     membership_panel = build_membership_panel(
         member_intervals=member_intervals,
-        trading_calendar=trading_calendar,
+        trading_calendar=build_calendar,
         asset_codes=universe_codes,
         index_codes=universe_indices,
     )
-    save_source_cache(cache_directory, MEMBERSHIP_SOURCE, membership_panel)
+    save_source_cache(
+        cache_directory,
+        MEMBERSHIP_SOURCE,
+        membership_panel,
+        build_metadata,
+    )
     return membership_panel, universe_codes
 
 
-# 合并各配置指数的成员资格，形成 Factors 使用的逐日股票池。
 def _merge_universe_membership(
     membership_panel: pd.DataFrame,
     universe_codes: Sequence[str],
 ) -> pd.DataFrame:
-    """
-    合并中证800和中证1000历史成员面板。
-
-    输入：
-    - membership_panel：三层列的指数成员来源面板。
-    - universe_codes：最终股票列顺序。
-
-    输出：
-    - 返回日期乘股票的布尔 DataFrame，任一配置指数当日包含该股票即为真。
-
-    功能和用途：
-    - 保留各指数独立缓存的同时，为 Factors 和回测提供直接可用的统一研究股票池。
-    """
+    """把各指数成员资格按股票代码取逻辑或。"""
     index_membership = membership_panel.xs(
         "membership",
         axis=1,
@@ -442,7 +568,6 @@ def _merge_universe_membership(
 
 # ===================== 其他配置来源 ===================== #
 
-# 对单个配置来源执行缓存读取或原始数据构建链路。
 def _load_or_build_source_panel(
     data_root: Path,
     cache_directory: Path,
@@ -452,53 +577,81 @@ def _load_or_build_source_panel(
     end_date: pd.Timestamp,
     trading_calendar: pd.DatetimeIndex,
     universe_codes: Sequence[str],
+    universe_indices: Sequence[str],
     refresh: bool,
 ) -> pd.DataFrame:
-    """
-    读取或构建一个非基准行情来源的缓存面板。
+    """读取一个来源缓存，或按共享范围和字段并集覆盖重建。"""
+    requested_metadata = _source_metadata(
+        data_root=data_root,
+        source_config=source_config,
+        universe_indices=universe_indices,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    cached_panel, build_metadata, rebuild = _prepare_source_cache(
+        cache_directory=cache_directory,
+        source_name=source_name,
+        requested_metadata=requested_metadata,
+        refresh=refresh,
+    )
+    if not rebuild:
+        return cached_panel
 
-    输入：
-    - data_root、cache_directory：原始数据根和当前配置缓存目录。
-    - source_name、source_config：来源名及其字段、指数、筛选和预测年度配置。
-    - start_date、end_date：原始记录读取范围。
-    - trading_calendar：所有来源共享的最终日期索引。
-    - universe_codes：中证800与中证1000历史成员股票列。
-    - refresh：是否跳过已有来源缓存。
-
-    输出：
-    - 返回完成处理并与交易日历对齐的来源级 MultiIndex 面板。
-
-    功能和用途：
-    - 缓存未命中时串起原始长表加载、来源口径处理和 Parquet 保存。
-    - 指数行情列采用配置的指数代码，个股与指数权重列采用统一历史成员范围。
-    """
-    if not refresh:
-        cached_panel = load_source_cache(cache_directory, source_name)
-        if cached_panel is not None:
-            return cached_panel
-
+    build_config = _build_source_config(source_config, build_metadata)
+    build_start = pd.Timestamp(build_metadata["start_date"])
+    build_end = pd.Timestamp(build_metadata["end_date"])
+    build_calendar = trading_calendar[
+        (trading_calendar >= build_start) & (trading_calendar <= build_end)
+    ]
     source_records = load_data(
         data_root=data_root,
         source_name=source_name,
-        source_config=source_config,
-        start_date=start_date,
-        end_date=end_date,
+        source_config=build_config,
+        start_date=build_start,
+        end_date=build_end,
         universe_codes=universe_codes,
     )
     source_spec = DATA_SOURCE_SPECS[source_name]
+    output_asset_codes = universe_codes
     if source_spec.asset_column is None:
-        output_asset_codes = tuple(
-            str(code)
-            for code in source_config["codes"]
-        )
-    else:
-        output_asset_codes = universe_codes
+        output_asset_codes = tuple(build_config["codes"])
     source_panel = build_source_panel(
         source_name=source_name,
         source_data=source_records,
-        source_fields=source_config["fields"],
-        trading_calendar=trading_calendar,
+        source_fields=build_config["fields"],
+        trading_calendar=build_calendar,
         asset_codes=output_asset_codes,
     )
-    save_source_cache(cache_directory, source_name, source_panel)
+    save_source_cache(
+        cache_directory,
+        source_name,
+        source_panel,
+        build_metadata,
+    )
     return source_panel
+
+
+def _slice_source_panel(
+    source_name: str,
+    source_panel: pd.DataFrame,
+    source_config: Mapping[str, Any],
+    trading_calendar: pd.DatetimeIndex,
+) -> pd.DataFrame:
+    """从共享缓存切出当前 YAML 声明的日期、字段和指数代码。"""
+    output_fields = list(source_config["fields"])
+    if source_name in DATA_SOURCE_SPECS:
+        if DATA_SOURCE_SPECS[source_name].kind == "financial":
+            output_fields.append("REPORT_PERIOD")
+    column_mask = source_panel.columns.get_level_values("field").isin(
+        output_fields
+    )
+    requested_codes = tuple(str(code) for code in source_config.get("codes", ()))
+    if requested_codes and "index_code" in source_panel.columns.names:
+        column_mask &= source_panel.columns.get_level_values("index_code").isin(
+            requested_codes
+        )
+    elif requested_codes and "asset_code" in source_panel.columns.names:
+        column_mask &= source_panel.columns.get_level_values("asset_code").isin(
+            requested_codes
+        )
+    return source_panel.loc[trading_calendar, column_mask]
