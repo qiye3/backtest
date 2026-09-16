@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from tqdm.auto import tqdm
 
 from src.backtest import run_backtests
 from src.backtest.io import (
@@ -37,18 +38,67 @@ from src.overall_evaluation import evaluate_overall
 from src.plotter import plot_factors, plot_overall_evaluation
 
 
-def run(config: RunConfig) -> dict[str, Any]:
+class _CliProgress:
+    """只为启用阶段维护一个 tqdm 命令行进度条。"""
+
+    def __init__(self, config: RunConfig, enabled: bool) -> None:
+        self._stage_names = _enabled_progress_stages(config)
+        self._bar = tqdm(
+            total=len(self._stage_names),
+            desc="Factor backtest",
+            unit="stage",
+            disable=not enabled,
+        )
+
+    def __enter__(self) -> _CliProgress:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self._bar.close()
+
+    def start(self, stage_name: str) -> None:
+        """显示当前正在执行的阶段。"""
+        if stage_name in self._stage_names:
+            self._bar.set_postfix_str(stage_name, refresh=True)
+
+    def complete(self, stage_name: str) -> None:
+        """在一个启用阶段成功结束后推进进度。"""
+        if stage_name in self._stage_names:
+            self._bar.update()
+
+
+def run(
+    config: RunConfig,
+    show_progress: bool = False,
+) -> dict[str, Any]:
     """按配置固定顺序运行启用阶段，并优先复用本次内存结果。"""
+    with _CliProgress(config, show_progress) as progress:
+        return _run_pipeline(config, progress)
+
+
+def _run_pipeline(
+    config: RunConfig,
+    progress: _CliProgress,
+) -> dict[str, Any]:
+    """执行固定阶段链路，并在每个阶段成功后更新 CLI 进度。"""
     save_config_snapshot(config)
     run_settings = config.raw["run"]
     stage_results: dict[str, Any] = {}
+
+    progress.start("market_data")
     market_data = _load_market_data(config)
+    progress.complete("market_data")
+
     needs_external_returns = run_settings["group_return"] or run_settings[
         "simple_backtest"
     ]
     external_return_panel = None
     if config.external_return_path is not None and needs_external_returns:
+        progress.start("external_returns")
         external_return_panel = load_return_panel(config.external_return_path)
+        progress.complete("external_returns")
+
+    progress.start("factors")
     factor_panels = _calculate_factors(config, market_data)
     if factor_panels is not None:
         stage_results["factors"] = factor_panels
@@ -63,7 +113,9 @@ def run(config: RunConfig) -> dict[str, Any]:
         ]
     ):
         factor_panels = load_factor_panels(config.output_root)
+    progress.complete("factors")
 
+    progress.start("group_return")
     group_return_results = _run_group_return(
         config,
         factor_panels,
@@ -72,6 +124,9 @@ def run(config: RunConfig) -> dict[str, Any]:
     )
     if group_return_results is not None:
         stage_results["group_return"] = group_return_results
+    progress.complete("group_return")
+
+    progress.start("simple_backtest")
     simple_backtest_results = _run_backtest(
         config,
         factor_panels,
@@ -81,6 +136,9 @@ def run(config: RunConfig) -> dict[str, Any]:
     )
     if simple_backtest_results is not None:
         stage_results["simple_backtest"] = simple_backtest_results
+    progress.complete("simple_backtest")
+
+    progress.start("account_backtest")
     account_backtest_results = _run_backtest(
         config,
         factor_panels,
@@ -90,6 +148,7 @@ def run(config: RunConfig) -> dict[str, Any]:
     )
     if account_backtest_results is not None:
         stage_results["account_backtest"] = account_backtest_results
+    progress.complete("account_backtest")
 
     completed_backtests = {}
     if simple_backtest_results is not None:
@@ -104,6 +163,7 @@ def run(config: RunConfig) -> dict[str, Any]:
         )
 
     if run_settings["plotter"]:
+        progress.start("plotter")
         if group_return_results is None:
             group_return_results = load_evaluation_results(
                 factor_panels,
@@ -149,7 +209,9 @@ def run(config: RunConfig) -> dict[str, Any]:
             },
         )
         stage_results["plotter"] = plot_paths
+        progress.complete("plotter")
 
+    progress.start("overall_evaluation")
     overall_result = _run_overall_evaluation(
         config=config,
         factor_panels=factor_panels,
@@ -158,7 +220,50 @@ def run(config: RunConfig) -> dict[str, Any]:
     )
     if overall_result is not None:
         stage_results["overall_evaluation"] = overall_result
+    progress.complete("overall_evaluation")
     return stage_results
+
+
+def _enabled_progress_stages(config: RunConfig) -> tuple[str, ...]:
+    """按真实执行顺序列出 CLI 需要展示的阶段。"""
+    run_settings = config.raw["run"]
+    calculation_stages = {
+        "factors",
+        "group_return",
+        "simple_backtest",
+        "account_backtest",
+        "overall_evaluation",
+    }
+    stages = []
+    if any(run_settings[stage_name] for stage_name in calculation_stages):
+        stages.append("market_data")
+    if config.external_return_path is not None and (
+        run_settings["group_return"] or run_settings["simple_backtest"]
+    ):
+        stages.append("external_returns")
+    if run_settings["factors"] or any(
+        run_settings[stage_name]
+        for stage_name in {
+            "group_return",
+            "simple_backtest",
+            "account_backtest",
+            "plotter",
+            "overall_evaluation",
+        }
+    ):
+        stages.append("factors")
+    stages.extend(
+        stage_name
+        for stage_name in [
+            "group_return",
+            "simple_backtest",
+            "account_backtest",
+            "plotter",
+            "overall_evaluation",
+        ]
+        if run_settings[stage_name]
+    )
+    return tuple(stages)
 
 
 def _load_market_data(config: RunConfig) -> MarketData | None:
@@ -318,7 +423,7 @@ def main() -> None:
     )
     arguments = parser.parse_args()
     config = load_config(arguments.config)
-    stage_results = run(config)
+    stage_results = run(config, show_progress=True)
     for stage_name, results in stage_results.items():
         print(f"{stage_name}: {len(results)} factor(s)")
 

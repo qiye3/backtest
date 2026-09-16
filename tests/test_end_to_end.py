@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import redirect_stderr
 from copy import deepcopy
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -180,7 +182,11 @@ class EndToEndTests(unittest.TestCase):
                 ],
                 [0, 0, 0],
             )
-            full_results = run(config)
+            progress_output = StringIO()
+            with redirect_stderr(progress_output):
+                full_results = run(config, show_progress=True)
+            self.assertIn("100%", progress_output.getvalue())
+            self.assertIn("overall_evaluation", progress_output.getvalue())
             metrics_summary = pd.read_csv(
                 output_root / "metrics_summary.csv"
             )
