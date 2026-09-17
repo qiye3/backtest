@@ -21,7 +21,14 @@ dependencies = [
 dev = ["ruff>=0.8"]
 
 [tool.setuptools.packages.find]
-include = ["examples*", "src*"]
+include = ["examples*", "src*", "strategies*"]
+
+[tool.setuptools.package-data]
+"strategies.yfd_growth100_factors" = [
+  "*.yaml",
+  "factor_configs/*.yaml",
+  "strategy_configs/*.yaml",
+]
 
 [tool.ruff]
 line-length = 100

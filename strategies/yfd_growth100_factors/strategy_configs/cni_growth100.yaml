@@ -1,7 +1,7 @@
 name: cni_growth100
 factor_name: cni_growth100_score
 implementation:
-  module: examples.code.CniGrowth100Portfolio
+  module: strategies.yfd_growth100_factors.portfolio
   class: CniGrowth100Portfolio
 benchmark_index: 000906.SH
 rebalance:

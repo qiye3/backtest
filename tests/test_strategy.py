@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from examples.code.CniGrowth100Portfolio import CniGrowth100Portfolio
 from src.backtest import engine as backtest_engine
 from src.backtest import iter_weight_backtests, run_weight_backtests
 from src.backtest.targets import rebalance_dates
@@ -20,6 +19,7 @@ from src.plotter.strategy import plot_strategy_backtest, plot_weight_deviation
 from src.strategy.config import load_strategy
 from src.strategy.evaluation import calculate_weight_deviation
 from src.strategy.io import load_strategy_targets, save_strategy_targets
+from strategies.yfd_growth100_factors.portfolio import CniGrowth100Portfolio
 
 
 class StrategyTests(unittest.TestCase):
@@ -58,7 +58,7 @@ class StrategyTests(unittest.TestCase):
             "factor_name": "growth_score",
             "benchmark_index": "000906.SH",
             "implementation": {
-                "module": "examples.code.CniGrowth100Portfolio",
+                "module": "strategies.yfd_growth100_factors.portfolio",
                 "class": "CniGrowth100Portfolio",
             },
             "params": {

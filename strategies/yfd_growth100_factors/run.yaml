@@ -1,4 +1,5 @@
 # 国证成长100编制思路示例：Factor 负责综合评分，PortfolioRule 负责目标权重。
+# python -m src.cli --config strategies/yfd_growth100_factors/run.yaml
 run:
   factors: true
   group_return: false
@@ -14,15 +15,15 @@ run:
 
 factors:
   # 专属目录只加载成长100综合评分，避免同时计算普通 Factor 示例。
-  config_directory: ../examples/config/growth100_factors
+  config_directory: factor_configs
 
 strategies:
-  config_directory: ../examples/config/strategies
+  config_directory: strategy_configs
   start: "2024-02-01"
   end: "2026-09-09"
 
 output:
-  root: ../outputs_growth100
+  root: ../../outputs_growth100
   save_parquet:
     factor: true
     group_return: false
@@ -35,7 +36,7 @@ output:
 
 market_data:
   source_root: /path/to/server/data
-  cache_root: ../data/wind_formal
+  cache_root: ../../data/wind_formal
   start_date: "2022-01-04"
   end_date: "2026-09-09"
   benchmark_index: 000906.SH
