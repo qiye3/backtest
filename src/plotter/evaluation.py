@@ -20,6 +20,8 @@ from src.plotter.style import (
     style_date_axis,
 )
 
+GROUPS_PER_TABLE_BLOCK = 12
+
 
 def plot_evaluation(
     factor_name: str,
@@ -40,17 +42,33 @@ def plot_evaluation(
         plot_settings["group_colors"],
         len(definitions),
     )
-    figure, axes = plt.subplots(
-        len(horizons),
-        2,
+    table_block_count = max(
+        1,
+        (len(definitions) + GROUPS_PER_TABLE_BLOCK - 1)
+        // GROUPS_PER_TABLE_BLOCK,
+    )
+    plot_row_height = settings["row_height"]
+    table_row_height = 0.62 * table_block_count
+    figure = plt.figure(
         figsize=(
             settings["width"],
-            settings["row_height"] * len(horizons) + 0.5,
+            (plot_row_height + table_row_height) * len(horizons) + 0.5,
         ),
-        squeeze=False,
         layout="constrained",
-        gridspec_kw={"width_ratios": [1, 1]},
     )
+    height_ratios = [plot_row_height, table_row_height] * len(horizons)
+    grid = figure.add_gridspec(
+        len(horizons) * 2,
+        2,
+        height_ratios=height_ratios,
+        width_ratios=[1, 1],
+    )
+    axes = np.empty((len(horizons), 2), dtype=object)
+    table_axes = []
+    for row_position in range(len(horizons)):
+        axes[row_position, 0] = figure.add_subplot(grid[row_position * 2, 0])
+        axes[row_position, 1] = figure.add_subplot(grid[row_position * 2, 1])
+        table_axes.append(figure.add_subplot(grid[row_position * 2 + 1, :]))
     set_figure_title(
         figure,
         f"{factor_name} | Forward-return evaluation",
@@ -147,10 +165,63 @@ def plot_evaluation(
                 horizon_label,
                 plot_settings,
             )
+        _plot_group_size_table(
+            table_axes[row_position],
+            definitions,
+            group_observations,
+        )
         style_axis(bar_axis)
         style_axis(line_axis)
         style_date_axis(line_axis)
     return save_figure(figure, output_stem, settings)
+
+
+def _plot_group_size_table(
+    axis: plt.Axes,
+    definitions: pd.DataFrame,
+    group_observations: pd.DataFrame,
+) -> None:
+    """按实际分组定义分行展示评价期内的平均股票数。"""
+    axis.axis("off")
+    table_rows = []
+    for start_position in range(0, len(definitions), GROUPS_PER_TABLE_BLOCK):
+        block = definitions.iloc[
+            start_position : start_position + GROUPS_PER_TABLE_BLOCK
+        ]
+        group_headers = [
+            f"{definition.group_id}\n{definition.label}"
+            for definition in block.itertuples(index=False)
+        ]
+        mean_sizes = group_observations.loc[
+            block["group_id"],
+            "mean_group_size",
+        ]
+        size_labels = [
+            f"{mean_size:.1f}" if pd.notna(mean_size) else "N/A"
+            for mean_size in mean_sizes
+        ]
+        table_rows.append(["Group", *group_headers])
+        table_rows.append(["Mean stocks", *size_labels])
+
+    # 固定预留十二组宽度，使默认十组与未来十二组保持相同版式。
+    column_count = GROUPS_PER_TABLE_BLOCK + 1
+    padded_rows = [
+        row + [""] * (column_count - len(row))
+        for row in table_rows
+    ]
+    table = axis.table(
+        cellText=padded_rows,
+        cellLoc="center",
+        bbox=[0, 0, 1, 1],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(7.5)
+    for (_, column_position), cell in table.get_celld().items():
+        cell.set_facecolor("white")
+        cell.set_edgecolor("#333333")
+        cell.set_linewidth(0.6)
+        if column_position == 0:
+            cell.set_text_props(weight="bold")
 
 
 def _plot_sampling_ic(
