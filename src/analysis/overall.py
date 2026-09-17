@@ -1,4 +1,4 @@
-"""汇总一批因子的横截面相关性、IC 和分组收益。"""
+"""汇总一批因子的跨阶段评价结果。"""
 
 from __future__ import annotations
 

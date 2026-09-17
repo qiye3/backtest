@@ -12,6 +12,7 @@ from typing import Any
 import pandas as pd
 from tqdm.auto import tqdm
 
+from src.analysis import evaluate_overall
 from src.backtest import iter_backtests, iter_weight_backtests
 from src.backtest.io import (
     RESULT_FILE_NAMES,
@@ -33,7 +34,7 @@ from src.factors.io import (
     load_factor_panels,
     save_factor_panels,
 )
-from src.group_return import evaluate_overall, iter_factor_evaluations
+from src.group_return import iter_factor_evaluations
 from src.group_return.io import (
     FACTOR_SUMMARY_FILE_NAMES,
     load_evaluation_result,
