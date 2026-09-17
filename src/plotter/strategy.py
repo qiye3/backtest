@@ -404,7 +404,7 @@ def _draw_metrics_table(
             0.96,
             block_name,
             transform=axis.transAxes,
-            fontsize=9,
+            fontsize=10.5,
             fontweight="bold",
             color="black",
             verticalalignment="top",
@@ -423,7 +423,7 @@ def _draw_metrics_table(
             cellLoc="left",
         )
         table.auto_set_font_size(False)
-        table.set_fontsize(7.8)
+        table.set_fontsize(9.5)
         for (_, column_position), cell in table.get_celld().items():
             cell.set_edgecolor("black")
             cell.set_linewidth(0.6)
