@@ -406,7 +406,7 @@ def _draw_metrics_table(
             transform=axis.transAxes,
             fontsize=9,
             fontweight="bold",
-            color="#34424D",
+            color="black",
             verticalalignment="top",
         )
         rows = [
@@ -424,10 +424,11 @@ def _draw_metrics_table(
         )
         table.auto_set_font_size(False)
         table.set_fontsize(7.8)
-        for (row_position, column_position), cell in table.get_celld().items():
-            cell.set_edgecolor("white")
-            cell.set_linewidth(1.0)
-            cell.set_facecolor("#F1F4F6" if column_position == 0 else "white")
+        for (_, column_position), cell in table.get_celld().items():
+            cell.set_edgecolor("black")
+            cell.set_linewidth(0.6)
+            cell.set_facecolor("white")
+            cell.get_text().set_color("black")
             if column_position == 1:
                 cell.get_text().set_horizontalalignment("right")
 
