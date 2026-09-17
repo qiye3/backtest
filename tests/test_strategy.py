@@ -204,7 +204,6 @@ class StrategyTests(unittest.TestCase):
             index=rebalance_index,
             columns=target_weights.columns,
         )
-        deviation = calculate_weight_deviation(target_weights, benchmark_weights)
         with TemporaryDirectory() as temporary_directory:
             output_root = Path(temporary_directory)
             plot_settings = _plot_settings()
@@ -220,7 +219,8 @@ class StrategyTests(unittest.TestCase):
             )
             deviation_paths = plot_weight_deviation(
                 strategy_name="demo",
-                deviation=deviation,
+                target_weights=target_weights,
+                benchmark_weights=benchmark_weights,
                 settings=plot_settings,
                 output_stem=output_root / "deviation",
                 rebalance_label="quarterly-1",

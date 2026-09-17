@@ -528,17 +528,14 @@ def _plot_strategy_checkpoints(
             cache_root / "strategies" / strategy_name / "figures"
         )
         for interval, target_weights in target_result["periods"].items():
-            deviation = calculate_weight_deviation(
-                target_weights,
-                benchmark_weights,
-            )
             interval_label = _strategy_interval_label(
                 target_result["rebalance_frequency"],
                 interval,
             )
             plot_weight_deviation(
                 strategy_name=strategy_name,
-                deviation=deviation,
+                target_weights=target_weights,
+                benchmark_weights=benchmark_weights,
                 settings=config.raw["plots"],
                 output_stem=figure_directory / f"deviation_{interval_label}",
                 rebalance_label=interval_label,
