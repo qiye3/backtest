@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from dataclasses import dataclass
 from itertools import repeat
 from typing import Any
 
@@ -24,6 +25,15 @@ from src.backtest.targets import (
     prepare_target_context,
 )
 from src.data.market_data import MarketData
+
+
+@dataclass(frozen=True)
+class _BacktestContext:
+    """保存一整批因子回测共享的目标、价格和曲线频率上下文。"""
+
+    target: TargetContext
+    simulation: PriceContext | ReturnContext
+    need_daily: bool
 
 
 def run_backtests(
@@ -53,11 +63,81 @@ def run_backtests(
     目标构造以因子乘周期为矩阵任务；账户模拟以因子乘周期乘分组为独立
     任务。两阶段都共享市场上下文，线程执行不会复制大型 DataFrame。
     """
+    factor_items = list(factor_panels.items())
+    completed_results = dict(
+        iter_backtests(
+            factor_items=factor_items,
+            market_data=market_data,
+            settings=settings,
+            metrics_settings=metrics_settings,
+            mode=mode,
+            max_workers=max_workers,
+            return_panel=return_panel,
+        )
+    )
+    return {
+        factor_name: completed_results[factor_name]
+        for factor_name, _ in factor_items
+    }
+
+
+def iter_backtests(
+    factor_items: Iterable[tuple[str, pd.DataFrame]],
+    market_data: MarketData,
+    settings: Mapping[str, Any],
+    metrics_settings: Mapping[str, Any],
+    mode: str,
+    max_workers: int | None = None,
+    return_panel: pd.DataFrame | None = None,
+) -> Iterator[tuple[str, dict[str, Any]]]:
+    """复用整阶段上下文和线程池，逐因子产出完整回测结果。"""
+    context = _prepare_backtest_context(
+        market_data=market_data,
+        settings=settings,
+        metrics_settings=metrics_settings,
+        mode=mode,
+        return_panel=return_panel,
+    )
+    if max_workers == 1:
+        for factor_name, factor_panel in factor_items:
+            yield factor_name, _run_factor_backtest(
+                factor_name=factor_name,
+                factor_panel=factor_panel,
+                context=context,
+                settings=settings,
+                metrics_settings=metrics_settings,
+                mode=mode,
+                executor=None,
+            )
+        return
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for factor_name, factor_panel in factor_items:
+            yield factor_name, _run_factor_backtest(
+                factor_name=factor_name,
+                factor_panel=factor_panel,
+                context=context,
+                settings=settings,
+                metrics_settings=metrics_settings,
+                mode=mode,
+                executor=executor,
+            )
+
+
+def _prepare_backtest_context(
+    market_data: MarketData,
+    settings: Mapping[str, Any],
+    metrics_settings: Mapping[str, Any],
+    mode: str,
+    return_panel: pd.DataFrame | None,
+) -> _BacktestContext:
+    """校验一次模式并准备整批因子共享的目标和模拟上下文。"""
     _validate_mode_settings(settings, mode)
     if mode == "account" and return_panel is not None:
         raise ValueError("account backtest 不接受外部收益面板")
     if return_panel is not None and settings["trade_price"] != "close":
         raise ValueError("外部日收益回测要求 trade_price 为 close")
+
     target_context = prepare_target_context(market_data, settings)
     if mode == "simple" and return_panel is not None:
         simulation_context = prepare_return_context(
@@ -71,59 +151,70 @@ def run_backtests(
         settings["curve_frequency"] in {"daily", "both"}
         or metrics_settings["return_frequency"] == "daily"
     )
+    return _BacktestContext(
+        target=target_context,
+        simulation=simulation_context,
+        need_daily=need_daily,
+    )
 
-    factor_items = list(factor_panels.items())
-    rebalance_intervals = settings["rebalance"]["intervals"]
+
+def _run_factor_backtest(
+    factor_name: str,
+    factor_panel: pd.DataFrame,
+    context: _BacktestContext,
+    settings: Mapping[str, Any],
+    metrics_settings: Mapping[str, Any],
+    mode: str,
+    executor: ThreadPoolExecutor | None,
+) -> dict[str, Any]:
+    """使用共享上下文完成一个因子的全部周期和分组任务。"""
     target_tasks = [
         (factor_name, factor_panel, interval)
-        for factor_name, factor_panel in factor_items
-        for interval in rebalance_intervals
+        for interval in settings["rebalance"]["intervals"]
     ]
-
-    if max_workers == 1:
+    if executor is None:
         target_results = [
-            _build_target_task(task, target_context, settings)
+            _build_target_task(task, context.target, settings)
             for task in target_tasks
         ]
         group_results = [
             _run_group_task(
                 task,
-                simulation_context,
+                context.simulation,
                 settings,
                 metrics_settings,
                 mode,
-                need_daily,
+                context.need_daily,
             )
             for task in _group_tasks(target_results)
         ]
     else:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            target_results = list(
-                executor.map(
-                    _build_target_task,
-                    target_tasks,
-                    repeat(target_context),
-                    repeat(settings),
-                )
+        target_results = list(
+            executor.map(
+                _build_target_task,
+                target_tasks,
+                repeat(context.target),
+                repeat(settings),
             )
-            group_results = list(
-                executor.map(
-                    _run_group_task,
-                    _group_tasks(target_results),
-                    repeat(simulation_context),
-                    repeat(settings),
-                    repeat(metrics_settings),
-                    repeat(mode),
-                    repeat(need_daily),
-                )
+        )
+        group_results = list(
+            executor.map(
+                _run_group_task,
+                _group_tasks(target_results),
+                repeat(context.simulation),
+                repeat(settings),
+                repeat(metrics_settings),
+                repeat(mode),
+                repeat(context.need_daily),
             )
+        )
     return _assemble_results(
-        factor_names=[factor_name for factor_name, _ in factor_items],
-        definitions=target_context.definitions,
+        factor_names=[factor_name],
+        definitions=context.target.definitions,
         target_results=target_results,
         group_results=group_results,
         rebalance_frequency=settings["rebalance"]["frequency"],
-    )
+    )[factor_name]
 
 
 def run_weight_backtests(
@@ -137,6 +228,37 @@ def run_weight_backtests(
     return_panel: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """直接回测各调仓周期的目标权重，不再构造因子分组。"""
+    return next(
+        iter_weight_backtests(
+            strategy_items=[
+                (
+                    "strategy",
+                    target_weights_by_interval,
+                    rebalance_frequency,
+                )
+            ],
+            market_data=market_data,
+            settings=settings,
+            metrics_settings=metrics_settings,
+            mode=mode,
+            max_workers=max_workers,
+            return_panel=return_panel,
+        )
+    )[1]
+
+
+def iter_weight_backtests(
+    strategy_items: Iterable[
+        tuple[str, Mapping[int, pd.DataFrame], str]
+    ],
+    market_data: MarketData,
+    settings: Mapping[str, Any],
+    metrics_settings: Mapping[str, Any],
+    mode: str,
+    max_workers: int | None = None,
+    return_panel: pd.DataFrame | None = None,
+) -> Iterator[tuple[str, dict[str, Any]]]:
+    """共享一次价格上下文和线程池，逐策略产出目标权重回测结果。"""
     _validate_mode_settings(settings, mode)
     if mode == "account" and return_panel is not None:
         raise ValueError("account backtest 不接受外部收益面板")
@@ -155,13 +277,52 @@ def run_weight_backtests(
         settings["curve_frequency"] in {"daily", "both"}
         or metrics_settings["return_frequency"] == "daily"
     )
+    if max_workers == 1:
+        for strategy_name, period_targets, rebalance_frequency in strategy_items:
+            yield strategy_name, _run_weight_backtest_with_context(
+                target_weights_by_interval=period_targets,
+                simulation_context=simulation_context,
+                settings=settings,
+                metrics_settings=metrics_settings,
+                mode=mode,
+                rebalance_frequency=rebalance_frequency,
+                need_daily=need_daily,
+                executor=None,
+            )
+        return
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for strategy_name, period_targets, rebalance_frequency in strategy_items:
+            yield strategy_name, _run_weight_backtest_with_context(
+                target_weights_by_interval=period_targets,
+                simulation_context=simulation_context,
+                settings=settings,
+                metrics_settings=metrics_settings,
+                mode=mode,
+                rebalance_frequency=rebalance_frequency,
+                need_daily=need_daily,
+                executor=executor,
+            )
+
+
+def _run_weight_backtest_with_context(
+    target_weights_by_interval: Mapping[int, pd.DataFrame],
+    simulation_context: PriceContext | ReturnContext,
+    settings: Mapping[str, Any],
+    metrics_settings: Mapping[str, Any],
+    mode: str,
+    rebalance_frequency: str,
+    need_daily: bool,
+    executor: ThreadPoolExecutor | None,
+) -> dict[str, Any]:
+    """使用既有价格上下文完成一个策略的全部调仓周期。"""
     strategy_settings = deepcopy(settings)
     strategy_settings["rebalance"] = {"frequency": rebalance_frequency}
     simulation_tasks = [
         ("strategy", interval, "strategy", target_weights)
         for interval, target_weights in target_weights_by_interval.items()
     ]
-    if max_workers == 1:
+    if executor is None:
         simulation_results = [
             _run_group_task(
                 task,
@@ -174,18 +335,17 @@ def run_weight_backtests(
             for task in simulation_tasks
         ]
     else:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            simulation_results = list(
-                executor.map(
-                    _run_group_task,
-                    simulation_tasks,
-                    repeat(simulation_context),
-                    repeat(strategy_settings),
-                    repeat(metrics_settings),
-                    repeat(mode),
-                    repeat(need_daily),
-                )
+        simulation_results = list(
+            executor.map(
+                _run_group_task,
+                simulation_tasks,
+                repeat(simulation_context),
+                repeat(strategy_settings),
+                repeat(metrics_settings),
+                repeat(mode),
+                repeat(need_daily),
             )
+        )
 
     metrics = []
     periods = {}

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +25,9 @@ def plot_factor(
     account_backtest_result: Mapping[str, Any] | None = None,
     evaluation_settings: Mapping[str, Any] | None = None,
     backtest_settings: Mapping[str, Mapping[str, Any]] | None = None,
+    plot_names: Collection[str] | None = None,
 ) -> dict[str, list[Path]]:
-    """从一个因子的内存面板和计算结果生成全部已启用图表。"""
+    """从一个因子的内存结果生成点名阶段或全部已启用图表。"""
     if not settings["enabled"]:
         return {}
     output_directory = Path(output_directory)
@@ -88,6 +89,7 @@ def plot_factor(
     }
 
     generated = {}
+    requested_plot_names = set(inputs) if plot_names is None else set(plot_names)
     with plt.rc_context(
         {
             "font.family": settings["font_family"],
@@ -97,6 +99,8 @@ def plot_factor(
         }
     ):
         for plot_name, result in inputs.items():
+            if plot_name not in requested_plot_names:
+                continue
             if not settings[plot_name]["enabled"]:
                 continue
             if result is None:

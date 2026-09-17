@@ -9,13 +9,14 @@
 
 from src.factors.base import Factor
 from src.factors.config import load_factor, load_factors
-from src.factors.engine import calc_factors
+from src.factors.engine import calc_factors, iter_factor_panels
 from src.factors.ExampleFactor import ExampleFactor
 
 __all__ = [
     "ExampleFactor",
     "Factor",
     "calc_factors",
+    "iter_factor_panels",
     "load_factor",
     "load_factors",
 ]

@@ -9,9 +9,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
-from itertools import repeat
+from collections.abc import Iterator, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 
 import pandas as pd
 
@@ -41,21 +40,59 @@ def calc_factors(
     - 串行和并行模式使用同一单因子执行逻辑，输出口径完全一致。
     - 线程共享大型市场面板，避免进程并行复制 DataFrame；具体计算异常直接传播。
     """
+    completed_panels = dict(
+        iter_factor_panels(
+            factors=factors,
+            market_data=market_data,
+            max_workers=max_workers,
+        )
+    )
+    return {
+        factor.name: completed_panels[factor.name]
+        for factor in factors
+    }
+
+
+def iter_factor_panels(
+    factors: Sequence[Factor],
+    market_data: MarketData,
+    max_workers: int = 1,
+) -> Iterator[tuple[str, pd.DataFrame]]:
+    """按完成顺序产出因子面板，并将同时驻留的结果限制在线程数以内。"""
     if max_workers == 1:
-        factor_results = [
-            _calc_factor_panel(factor, market_data)
-            for factor in factors
-        ]
-    else:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            factor_results = list(
-                executor.map(
-                    _calc_factor_panel,
-                    factors,
-                    repeat(market_data),
-                )
+        for factor in factors:
+            yield _calc_factor_panel(factor, market_data)
+        return
+
+    factor_iterator = iter(factors)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        pending_futures: dict[Future, Factor] = {}
+        for _ in range(max_workers):
+            factor = next(factor_iterator, None)
+            if factor is None:
+                break
+            pending_futures[
+                executor.submit(_calc_factor_panel, factor, market_data)
+            ] = factor
+
+        while pending_futures:
+            completed_futures, _ = wait(
+                pending_futures,
+                return_when=FIRST_COMPLETED,
             )
-    return dict(factor_results)
+            for completed_future in completed_futures:
+                pending_futures.pop(completed_future)
+                factor_result = completed_future.result()
+                next_factor = next(factor_iterator, None)
+                if next_factor is not None:
+                    pending_futures[
+                        executor.submit(
+                            _calc_factor_panel,
+                            next_factor,
+                            market_data,
+                        )
+                    ] = next_factor
+                yield factor_result
 
 
 # 计算单个因子并套用统一的日期、股票和成员口径。

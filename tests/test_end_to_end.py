@@ -16,6 +16,7 @@ import pandas as pd
 import yaml
 from matplotlib.figure import Figure
 
+from src.backtest import engine as backtest_engine
 from src.backtest.io import load_backtest_results, save_backtest_results
 from src.cli import run
 from src.config import load_config
@@ -91,7 +92,7 @@ class EndToEndTests(unittest.TestCase):
             self._write_config(config_path, config_data)
 
             with patch(
-                "src.cli.run_backtests",
+                "src.cli.iter_backtests",
                 side_effect=RuntimeError("injected backtest failure"),
             ):
                 with self.assertRaisesRegex(RuntimeError, "injected"):
@@ -113,6 +114,47 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(summary.stage_counts, {"factors": 2})
             self.assertFalse(checkpoint_root.exists())
             self.assertTrue(pd.read_parquet(previous_factor_path).shape[0] > 0)
+
+    def test_group_return_outputs_survive_later_stage_failure(self) -> None:
+        """评价阶段成功后应立即发布汇总和图，不受后续回测失败影响。"""
+        with TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory)
+            output_root = workspace / "output"
+            config_path = workspace / "stage_publish_test.yaml"
+            config_data = self._test_config(output_root)
+            config_data["market_data"]["cache_root"] = str(
+                workspace / "market_cache"
+            )
+            config_data["run"].update(
+                {
+                    "account_backtest": False,
+                    "overall_evaluation": False,
+                }
+            )
+            self._write_config(config_path, config_data)
+
+            with patch(
+                "src.cli.iter_backtests",
+                side_effect=RuntimeError("injected backtest failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "injected"):
+                    run(load_config(config_path))
+
+            self.assertTrue((output_root / "config_snapshot.yaml").is_file())
+            self.assertTrue((output_root / "factor_summary_daily.csv").is_file())
+            self.assertTrue((output_root / "factor_summary_weekly.csv").is_file())
+            for factor_name in FACTOR_NAMES:
+                figure_directory = output_root / factor_name / "figures"
+                self.assertTrue(
+                    (figure_directory / "00_factor_distribution.png").is_file()
+                )
+                self.assertTrue(
+                    (figure_directory / "01_evaluation.png").is_file()
+                )
+                self.assertFalse(
+                    (figure_directory / "02_simple_backtest.png").exists()
+                )
+            self.assertTrue((output_root / ".pipeline_cache").is_dir())
 
     def test_factor_and_group_return_create_screening_summary(self) -> None:
         """第一阶段应独立生成筛选汇总，不依赖任何回测阶段。"""
@@ -286,8 +328,20 @@ class EndToEndTests(unittest.TestCase):
                 [0, 0, 0],
             )
             progress_output = StringIO()
-            with redirect_stderr(progress_output):
+            with (
+                redirect_stderr(progress_output),
+                patch(
+                    "src.backtest.engine.prepare_price_context",
+                    wraps=backtest_engine.prepare_price_context,
+                ) as prepare_price_context,
+                patch(
+                    "src.backtest.engine.prepare_target_context",
+                    wraps=backtest_engine.prepare_target_context,
+                ) as prepare_target_context,
+            ):
                 full_results = run(config, show_progress=True)
+            self.assertEqual(prepare_price_context.call_count, 2)
+            self.assertEqual(prepare_target_context.call_count, 2)
             self.assertIn("100%", progress_output.getvalue())
             self.assertIn("overall_evaluation", progress_output.getvalue())
             daily_summary = pd.read_csv(
@@ -353,10 +407,10 @@ class EndToEndTests(unittest.TestCase):
                 [
                     "factors",
                     "group_return",
+                    "overall_evaluation",
                     "simple_backtest",
                     "account_backtest",
                     "plotter",
-                    "overall_evaluation",
                 ],
             )
             self.assertEqual(
@@ -468,6 +522,8 @@ class EndToEndTests(unittest.TestCase):
                 ["return_10d"],
                 external_output,
             )["return_10d"]
+            self.assertNotIn("members", external_evaluation)
+            self.assertNotIn("labels", external_evaluation)
             np.testing.assert_allclose(
                 price_evaluation["detail"]["group_return"],
                 external_evaluation["detail"]["group_return"],

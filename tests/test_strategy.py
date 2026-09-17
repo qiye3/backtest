@@ -5,13 +5,15 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 import yaml
 
 from examples.code.CniGrowth100Portfolio import CniGrowth100Portfolio
-from src.backtest import run_weight_backtests
+from src.backtest import engine as backtest_engine
+from src.backtest import iter_weight_backtests, run_weight_backtests
 from src.backtest.targets import rebalance_dates
 from src.data.market_data import MarketData
 from src.plotter.strategy import plot_strategy_backtest, plot_weight_deviation
@@ -227,6 +229,41 @@ class StrategyTests(unittest.TestCase):
             )
             self.assertTrue(all(path.exists() for path in strategy_paths))
             self.assertTrue(all(path.exists() for path in deviation_paths))
+
+    def test_weight_backtest_batch_prepares_price_context_once(self) -> None:
+        """多策略批量回测应共享同一价格上下文。"""
+        market_data = _backtest_market_data()
+        rebalance_index = pd.DatetimeIndex(
+            ["2024-01-05", "2024-02-02", "2024-03-01"],
+            name="date",
+        )
+        target_weights = pd.DataFrame(
+            [[0.7, 0.3], [0.4, 0.6], [0.8, 0.2]],
+            index=rebalance_index,
+            columns=market_data.membership.columns,
+        )
+        strategy_items = [
+            ("strategy_a", {1: target_weights}, "quarterly"),
+            ("strategy_b", {1: target_weights}, "quarterly"),
+        ]
+
+        with patch(
+            "src.backtest.engine.prepare_price_context",
+            wraps=backtest_engine.prepare_price_context,
+        ) as prepare_price_context:
+            results = dict(
+                iter_weight_backtests(
+                    strategy_items=strategy_items,
+                    market_data=market_data,
+                    settings=_backtest_settings(),
+                    metrics_settings=_metrics_settings(),
+                    mode="simple",
+                    max_workers=2,
+                )
+            )
+
+        self.assertEqual(set(results), {"strategy_a", "strategy_b"})
+        self.assertEqual(prepare_price_context.call_count, 1)
 
 
 def _portfolio_market_data(

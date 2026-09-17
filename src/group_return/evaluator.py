@@ -8,10 +8,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor
+import os
+from collections.abc import Iterable, Iterator, Mapping
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from itertools import repeat
 from typing import Any
 
 import numpy as np
@@ -48,24 +48,18 @@ class _EvaluationContext:
     horizon_complete: np.ndarray
     reference_prices: pd.DataFrame | None
     price_filled: pd.DataFrame | None
-    price_positions: np.ndarray | None
     external_future_returns: np.ndarray | None
     benchmark_returns: np.ndarray | None
 
 
 @dataclass(frozen=True)
 class _FutureReturnMatrices:
-    """保存单个 Factor 的未来收益、端点价格和补价矩阵。"""
+    """保存单个 Factor 的未来收益和补价矩阵。"""
 
     completed_evaluations: np.ndarray
     required_prices: np.ndarray
     future_returns: np.ndarray
     combined_price_filled: np.ndarray
-    start_prices: np.ndarray
-    end_prices: np.ndarray
-    start_price_filled: np.ndarray
-    end_price_filled: np.ndarray
-    safe_end_positions: np.ndarray
 
 
 # 按固定锚定周和指定星期选择因子评价日期。
@@ -314,7 +308,7 @@ def _prepare_reference_prices(
     missing_price_policy: str,
     max_stale_days: int | None,
     stock_codes: pd.Index,
-) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray]:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     准备全部交易日的评价参考价格。
 
@@ -326,11 +320,10 @@ def _prepare_reference_prices(
     - stock_codes：评价使用的固定股票列顺序。
 
     输出：
-    - 返回参考价格、是否使用历史收盘和实际价格日期位置。
+    - 返回参考价格和是否使用历史收盘的日频面板。
 
     功能和用途：
     - ``previous_close`` 只读取参考日前已经出现的正复权收盘。
-    - 价格日期保存为日历位置，避免创建完整的对象型日期面板。
     """
     price_field = "S_DQ_ADJCLOSE" if reference_price == "close" else "S_DQ_ADJOPEN"
     raw_price_panel = market_data.get_panel("stock_quote", price_field).reindex(
@@ -360,11 +353,6 @@ def _prepare_reference_prices(
     previous_close_positions[1:] = last_close_positions[:-1]
 
     reference_values = np.where(valid_raw_prices, raw_prices, np.nan)
-    price_positions = np.where(
-        valid_raw_prices,
-        calendar_positions[:, None],
-        -1,
-    ).astype(np.int32)
     price_filled = np.zeros_like(valid_raw_prices)
 
     if missing_price_policy == "previous_close":
@@ -381,7 +369,6 @@ def _prepare_reference_prices(
             axis=0,
         )
         reference_values[fill_prices] = previous_close_values[fill_prices]
-        price_positions[fill_prices] = previous_close_positions[fill_prices]
         price_filled[fill_prices] = True
 
     reference_price_panel = pd.DataFrame(
@@ -394,7 +381,7 @@ def _prepare_reference_prices(
         index=market_data.calendar,
         columns=stock_codes,
     )
-    return reference_price_panel, price_filled_panel, price_positions
+    return reference_price_panel, price_filled_panel
 
 
 # 为一批 Factor 准备只计算一次的市场评价上下文。
@@ -480,10 +467,9 @@ def _prepare_context(
 
     reference_prices = None
     price_filled = None
-    price_positions = None
     external_future_returns = None
     if return_panel is None:
-        reference_prices, price_filled, price_positions = _prepare_reference_prices(
+        reference_prices, price_filled = _prepare_reference_prices(
             market_data=market_data,
             reference_price=settings["reference_price"],
             missing_price_policy=settings["missing_price_policy"],
@@ -528,7 +514,6 @@ def _prepare_context(
         horizon_complete=horizon_complete,
         reference_prices=reference_prices,
         price_filled=price_filled,
-        price_positions=price_positions,
         external_future_returns=external_future_returns,
         benchmark_returns=benchmark_returns,
     )
@@ -626,7 +611,7 @@ def _prepare_future_return_matrices(
     - context：共享参考价格、端点位置和周期完整性。
 
     输出：
-    - 返回未来收益、起终点价格、补价标记和有效评价位置。
+    - 返回未来收益、补价标记和有效评价位置。
 
     功能和用途：
     - 价格只按当期有效因子股票检查，不会反向改变股票资格或分组。
@@ -651,14 +636,12 @@ def _prepare_future_return_matrices(
         missing_required_values = required_prices & (
             ~np.isfinite(start_prices[None, :, :]) | ~np.isfinite(end_prices)
         )
+        combined_price_filled = start_price_filled[None, :, :] | end_price_filled
         missing_label = "未来收益缺少参考价格"
     else:
         source_returns = context.external_future_returns
         missing_required_values = required_prices & ~np.isfinite(source_returns)
-        start_prices = np.full_like(factor_array, np.nan)
-        end_prices = np.full_like(source_returns, np.nan)
-        start_price_filled = np.zeros_like(factor_array, dtype=bool)
-        end_price_filled = np.zeros_like(source_returns, dtype=bool)
+        combined_price_filled = np.zeros_like(required_prices, dtype=bool)
         missing_label = "未来收益缺少外部日收益"
 
     if missing_required_values.any():
@@ -676,17 +659,11 @@ def _prepare_future_return_matrices(
     if context.benchmark_returns is not None:
         future_returns = future_returns - context.benchmark_returns[:, :, None]
     future_returns = np.where(required_prices, future_returns, np.nan)
-    combined_price_filled = start_price_filled[None, :, :] | end_price_filled
     return _FutureReturnMatrices(
         completed_evaluations=completed_evaluations,
         required_prices=required_prices,
         future_returns=future_returns,
         combined_price_filled=combined_price_filled,
-        start_prices=start_prices,
-        end_prices=end_prices,
-        start_price_filled=start_price_filled,
-        end_price_filled=end_price_filled,
-        safe_end_positions=safe_end_positions,
     )
 
 
@@ -802,47 +779,6 @@ def _calculate_group_return_matrices(
     )
 
 
-# 将三维组成员坐标批量转换为可追溯的长表。
-def _build_members(
-    factor_values: pd.DataFrame,
-    factor_percentiles: pd.DataFrame,
-    group_membership: np.ndarray,
-    group_weight_denominators: np.ndarray,
-    base_weights: np.ndarray,
-    context: _EvaluationContext,
-) -> pd.DataFrame:
-    """
-    构造各评价日的分组成员明细。
-
-    输入：
-    - 因子值、百分位、组成员数组、权重分母和基础权重。
-    - context：提供日期、股票代码和组编号。
-
-    输出：
-    - 返回日期、因子日期、组、股票、因子值、百分位和归一权重长表。
-
-    功能和用途：
-    - 通过非零数组坐标批量展开成员；重叠区间分别保留记录。
-    """
-    date_positions, group_positions, stock_positions = np.nonzero(
-        group_membership.transpose(1, 0, 2)
-    )
-    normalized_weights = base_weights[date_positions, stock_positions] / (
-        group_weight_denominators[group_positions, date_positions]
-    )
-    return pd.DataFrame(
-        {
-            "date": context.sample_dates.to_numpy()[date_positions],
-            "factor_date": context.factor_dates.to_numpy()[date_positions],
-            "group_id": context.group_definitions["group_id"].to_numpy()[group_positions],
-            "code": context.stock_codes.to_numpy()[stock_positions],
-            "factor_value": factor_values.to_numpy()[date_positions, stock_positions],
-            "percentile": factor_percentiles.to_numpy()[date_positions, stock_positions],
-            "weight": normalized_weights,
-        }
-    )
-
-
 # 将矩阵化评价结果按未来周期和分组做跨日期统计。
 def summarize_evaluation(
     detail: pd.DataFrame,
@@ -954,7 +890,7 @@ def _evaluate_factor(
     )
     (
         factor_values,
-        factor_percentiles,
+        _,
         group_membership,
         group_weight_denominators,
     ) = group_cross_sections(
@@ -1046,26 +982,6 @@ def _evaluate_factor(
         rank_ic_values=rank_ic_values,
         ic_status=ic_status,
     )
-    labels = _build_labels(
-        context=context,
-        settings=settings,
-        completed_evaluations=future_matrices.completed_evaluations,
-        valid_factor=valid_factor,
-        future_returns=future_matrices.future_returns,
-        start_prices=future_matrices.start_prices,
-        end_prices=future_matrices.end_prices,
-        start_price_filled=future_matrices.start_price_filled,
-        end_price_filled=future_matrices.end_price_filled,
-        safe_end_positions=future_matrices.safe_end_positions,
-    )
-    members = _build_members(
-        factor_values=factor_values,
-        factor_percentiles=factor_percentiles,
-        group_membership=group_membership,
-        group_weight_denominators=group_weight_denominators,
-        base_weights=base_weights,
-        context=context,
-    )
     summary, ic_summary = summarize_evaluation(detail, ic_series, settings)
     return {
         "definitions": context.group_definitions.copy(),
@@ -1077,8 +993,6 @@ def _evaluate_factor(
             factor_values,
             context.membership,
         ),
-        "members": members,
-        "labels": labels,
         "sample_dates": context.sample_dates,
     }
 
@@ -1209,87 +1123,6 @@ def _build_ic_table(
     )
 
 
-# 批量展开完整周期内每只有效股票的未来收益和价格来源。
-def _build_labels(
-    context: _EvaluationContext,
-    settings: Mapping[str, Any],
-    completed_evaluations: np.ndarray,
-    valid_factor: np.ndarray,
-    future_returns: np.ndarray,
-    start_prices: np.ndarray,
-    end_prices: np.ndarray,
-    start_price_filled: np.ndarray,
-    end_price_filled: np.ndarray,
-    safe_end_positions: np.ndarray,
-) -> pd.DataFrame:
-    """构造个股未来收益及其起终点价格来源长表。"""
-    label_mask = completed_evaluations[:, :, None] & valid_factor[None, :, :]
-    date_positions, horizon_positions, stock_positions = np.nonzero(
-        label_mask.transpose(1, 0, 2)
-    )
-    end_calendar_positions = safe_end_positions[
-        horizon_positions,
-        date_positions,
-    ]
-    start_calendar_positions = context.sample_positions[date_positions]
-    labels = pd.DataFrame(
-        {
-            "date": context.sample_dates.to_numpy()[date_positions],
-            "code": context.stock_codes.to_numpy()[stock_positions],
-            "horizon_value": context.horizon_values[horizon_positions],
-            "horizon_unit": context.horizon_units[horizon_positions],
-            "return_end_date": context.return_end_dates[
-                horizon_positions,
-                date_positions,
-            ],
-            "stock_return": future_returns[
-                horizon_positions,
-                date_positions,
-                stock_positions,
-            ],
-        }
-    )
-    if context.external_future_returns is not None:
-        labels["return_source"] = "external_return"
-        return labels
-
-    reference_price = settings["reference_price"]
-    start_actual_positions = context.price_positions[
-        start_calendar_positions,
-        stock_positions,
-    ]
-    end_actual_positions = context.price_positions[
-        end_calendar_positions,
-        stock_positions,
-    ]
-    labels = labels.assign(
-        return_source="market_price",
-        start_price=start_prices[date_positions, stock_positions],
-        end_price=end_prices[
-            horizon_positions,
-            date_positions,
-            stock_positions,
-        ],
-        start_price_date=context.calendar.to_numpy()[start_actual_positions],
-        end_price_date=context.calendar.to_numpy()[end_actual_positions],
-        start_price_source=np.where(
-            start_price_filled[date_positions, stock_positions],
-            "previous_close",
-            reference_price,
-        ),
-        end_price_source=np.where(
-            end_price_filled[
-                horizon_positions,
-                date_positions,
-                stock_positions,
-            ],
-            "previous_close",
-            reference_price,
-        ),
-    )
-    return labels
-
-
 # 评价一个标准日频 Factor 面板。
 def evaluate(
     factor_panel: pd.DataFrame,
@@ -1307,7 +1140,7 @@ def evaluate(
     - return_panel：可选的收盘到收盘日收益宽表。
 
     输出：
-    - 返回分组定义、明细、汇总、IC、成员、个股标签和采样日期。
+    - 返回分组定义、分组收益明细、IC、汇总、因子质量和采样日期。
 
     功能和用途：
     - 为单因子调用准备一次市场上下文并执行完整评价。
@@ -1341,22 +1174,82 @@ def evaluate_factors(
     - 市场日期、股票池、字段权重和参考价格只准备一次。
     - 线程共享大型面板，避免进程并行复制数据。
     """
-    context = _prepare_context(market_data, settings, return_panel)
     factor_items = list(factor_panels.items())
-    if len(factor_items) == 1 or max_workers == 1:
-        return {
-            factor_name: _evaluate_factor(factor_panel, context, settings)
-            for factor_name, factor_panel in factor_items
-        }
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        evaluations = executor.map(
-            _evaluate_factor,
-            [factor_panel for _, factor_panel in factor_items],
-            repeat(context),
-            repeat(settings),
+    completed_results = {
+        factor_name: evaluation_result
+        for factor_name, _, evaluation_result in iter_factor_evaluations(
+            factor_items=factor_items,
+            market_data=market_data,
+            settings=settings,
+            max_workers=max_workers,
+            return_panel=return_panel,
         )
-        return {
-            factor_name: evaluation
-            for (factor_name, _), evaluation in zip(factor_items, evaluations)
-        }
+    }
+    return {
+        factor_name: completed_results[factor_name]
+        for factor_name, _ in factor_items
+    }
+
+
+def iter_factor_evaluations(
+    factor_items: Iterable[tuple[str, pd.DataFrame]],
+    market_data: MarketData,
+    settings: Mapping[str, Any],
+    max_workers: int | None = None,
+    return_panel: pd.DataFrame | None = None,
+) -> Iterator[
+    tuple[
+        str,
+        pd.DataFrame,
+        dict[str, pd.DataFrame | pd.DatetimeIndex],
+    ]
+]:
+    """共享一次市场上下文，按完成顺序产出有界数量的单因子评价结果。"""
+    context = _prepare_context(market_data, settings, return_panel)
+    factor_iterator = iter(factor_items)
+    if max_workers == 1:
+        for factor_name, factor_panel in factor_iterator:
+            yield (
+                factor_name,
+                factor_panel,
+                _evaluate_factor(factor_panel, context, settings),
+            )
+        return
+
+    worker_count = max_workers or min(32, (os.cpu_count() or 1) + 4)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        pending_futures: dict[Future, tuple[str, pd.DataFrame]] = {}
+        for _ in range(worker_count):
+            factor_item = next(factor_iterator, None)
+            if factor_item is None:
+                break
+            factor_name, factor_panel = factor_item
+            pending_futures[
+                executor.submit(
+                    _evaluate_factor,
+                    factor_panel,
+                    context,
+                    settings,
+                )
+            ] = factor_item
+
+        while pending_futures:
+            completed_futures, _ = wait(
+                pending_futures,
+                return_when=FIRST_COMPLETED,
+            )
+            for completed_future in completed_futures:
+                factor_name, factor_panel = pending_futures.pop(completed_future)
+                evaluation_result = completed_future.result()
+                next_factor_item = next(factor_iterator, None)
+                if next_factor_item is not None:
+                    next_factor_name, next_factor_panel = next_factor_item
+                    pending_futures[
+                        executor.submit(
+                            _evaluate_factor,
+                            next_factor_panel,
+                            context,
+                            settings,
+                        )
+                    ] = (next_factor_name, next_factor_panel)
+                yield factor_name, factor_panel, evaluation_result
