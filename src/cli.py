@@ -33,7 +33,7 @@ from src.factors.io import (
     load_factor_panels,
     save_factor_panels,
 )
-from src.group_return import iter_factor_evaluations
+from src.group_return import evaluate_overall, iter_factor_evaluations
 from src.group_return.io import (
     FACTOR_SUMMARY_FILE_NAMES,
     load_evaluation_result,
@@ -49,7 +49,6 @@ from src.group_return.screening import (
     build_factor_screening_summary,
     build_frequency_summaries,
 )
-from src.overall_evaluation import evaluate_overall
 from src.plotter import (
     plot_factor,
     plot_overall_evaluation,
