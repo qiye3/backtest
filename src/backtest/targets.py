@@ -83,7 +83,8 @@ def prepare_target_context(
         )
 
     definitions = build_group_definitions(
-        settings["grouping"]["quantile_edges"]
+        settings["grouping"]["quantile_edges"],
+        settings["grouping"]["group_aliases"],
     )
     return TargetContext(
         calendar=calendar,

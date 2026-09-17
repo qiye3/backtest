@@ -25,17 +25,12 @@ def group_colors(color_spec: Sequence[str], color_count: int) -> list[Any]:
 
 
 def group_labels(definitions: pd.DataFrame) -> tuple[list[str], bool]:
-    """标准十等分返回 Q1 至 Q10，其他分组保留配置标签。"""
-    if len(definitions) == 10:
-        expected = np.column_stack(
-            (np.arange(10) / 10, (np.arange(10) + 1) / 10)
-        )
-        boundaries = definitions[
-            ["quantile_lower", "quantile_upper"]
-        ].to_numpy(dtype=float)
-        if np.allclose(boundaries, expected):
-            return [f"Q{position + 1}" for position in range(10)], True
-    return definitions["label"].tolist(), False
+    """返回配置组名，并标记是否适合不旋转地紧凑展示。"""
+    labels = definitions["label"].astype(str).tolist()
+    compact_labels = len(labels) <= 12 and all(
+        len(label) <= 6 for label in labels
+    )
+    return labels, compact_labels
 
 
 def style_date_axis(axis: plt.Axes) -> None:

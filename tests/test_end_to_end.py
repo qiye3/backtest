@@ -23,6 +23,7 @@ from src.config import load_config
 from src.data.market_data import MarketData
 from src.factors.io import load_factor_panels
 from src.group_return.evaluator import _prepare_return_horizons, evaluate
+from src.group_return.grouping import build_group_definitions, core_group_ids
 from src.group_return.io import load_evaluation_results
 from src.plotter.evaluation import _monthly_rank_ic, _plot_monthly_rank_ic
 
@@ -53,6 +54,40 @@ OVERALL_FIGURE_FILES = {
 class EndToEndTests(unittest.TestCase):
     """验证全阶段、日度调仓、市场缓存和 plotter-only 恢复。"""
 
+    def test_default_grouping_keeps_deciles_and_adds_extreme_tails(self) -> None:
+        """默认十二组应保留 G1/G10，并增加两个重叠的极端百分位组。"""
+        grouping = load_config(BASE_CONFIG_PATH).raw["group_return"]["grouping"]
+        definitions = build_group_definitions(
+            grouping["quantile_edges"],
+            grouping["group_aliases"],
+        )
+
+        self.assertEqual(
+            list(
+                definitions[
+                    ["group_id", "quantile_lower", "quantile_upper"]
+                ].itertuples(index=False, name=None)
+            ),
+            [
+                ("G0.1", 0.0, 0.01),
+                ("G1", 0.0, 0.1),
+                ("G2", 0.1, 0.2),
+                ("G3", 0.2, 0.3),
+                ("G4", 0.3, 0.4),
+                ("G5", 0.4, 0.5),
+                ("G6", 0.5, 0.6),
+                ("G7", 0.6, 0.7),
+                ("G8", 0.7, 0.8),
+                ("G9", 0.8, 0.9),
+                ("G10", 0.9, 1.0),
+                ("G9.9", 0.99, 1.0),
+            ],
+        )
+        self.assertEqual(
+            core_group_ids(definitions),
+            [f"G{position}" for position in range(1, 11)],
+        )
+
     def test_group_return_accepts_week_horizons_without_day_horizons(self) -> None:
         """仅配置自然周周期时，主配置应可直接加载。"""
         with TemporaryDirectory() as temporary_directory:
@@ -67,6 +102,29 @@ class EndToEndTests(unittest.TestCase):
 
             self.assertNotIn("future_return_days", config.raw["group_return"])
             self.assertEqual(config.raw["group_return"]["future_return_weeks"], [1])
+
+    def test_group_aliases_can_be_configured(self) -> None:
+        """自定义分位区间应使用 YAML 中一一对应的组名。"""
+        with TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory)
+            config_data = self._test_config(workspace / "output")
+            config_data["group_return"]["grouping"] = {
+                "quantile_edges": [[0.0, 0.2], [0.8, 1.0]],
+                "group_aliases": ["Low20", "High20"],
+            }
+            config_path = workspace / "custom_group_aliases.yaml"
+            self._write_config(config_path, config_data)
+
+            grouping = load_config(config_path).raw["group_return"]["grouping"]
+            definitions = build_group_definitions(
+                grouping["quantile_edges"],
+                grouping["group_aliases"],
+            )
+
+            self.assertEqual(
+                definitions["group_id"].tolist(),
+                ["Low20", "High20"],
+            )
 
     def test_failed_run_keeps_checkpoint_and_previous_results(self) -> None:
         """中间阶段失败时保留 checkpoint，且不覆盖上次成功结果。"""
@@ -685,7 +743,7 @@ class EndToEndTests(unittest.TestCase):
                 "simple",
             )["return_10d"]
             self.assertEqual(restored_summary["periods"], {})
-            self.assertEqual(len(restored_summary["metrics"]), 20)
+            self.assertEqual(len(restored_summary["metrics"]), 24)
 
     @staticmethod
     def _test_config(output_root: Path) -> dict:

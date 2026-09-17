@@ -21,7 +21,11 @@ class FactorScreeningSummaryTests(unittest.TestCase):
         evaluation_results = {
             "negative_factor": {
                 "definitions": pd.DataFrame(
-                    {"group_id": ["G01", "G10"]}
+                    {
+                        "group_id": ["G1", "G10"],
+                        "quantile_lower": [0.0, 0.9],
+                        "quantile_upper": [0.1, 1.0],
+                    }
                 ),
                 "factor_quality": pd.DataFrame(
                     {
@@ -59,7 +63,7 @@ class FactorScreeningSummaryTests(unittest.TestCase):
                     {
                         "horizon_value": [1, 1],
                         "horizon_unit": ["weeks", "weeks"],
-                        "group_id": ["G01", "G10"],
+                        "group_id": ["G1", "G10"],
                         "group_return": [0.03, 0.01],
                     }
                 ),
@@ -70,7 +74,7 @@ class FactorScreeningSummaryTests(unittest.TestCase):
                         ),
                         "horizon_value": [1] * 4,
                         "horizon_unit": ["weeks"] * 4,
-                        "group_id": ["G01", "G10", "G01", "G10"],
+                        "group_id": ["G1", "G10", "G1", "G10"],
                         "group_return": [0.03, 0.01, 0.00, 0.01],
                     }
                 ),
@@ -137,7 +141,9 @@ class FactorScreeningSummaryTests(unittest.TestCase):
         )
         metrics = pd.DataFrame(
             {
-                "group_id": ["G01", "G10"],
+                "group_id": ["G1", "G10"],
+                "quantile_lower": [0.0, 0.9],
+                "quantile_upper": [0.1, 1.0],
                 "rebalance_frequency": ["weekly", "weekly"],
                 "rebalance_interval": [1, 1],
                 "mode": ["simple", "simple"],

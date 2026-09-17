@@ -8,6 +8,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from src.backtest.events import make_curve_views
@@ -29,7 +30,8 @@ def build_metrics_summary(
     metric_frames = []
     for factor_name, factor_result in results.items():
         factor_metrics = factor_result["metrics"].loc[
-            lambda frame: frame["group_id"] == "G10",
+            lambda frame: np.isclose(frame["quantile_lower"], 0.9)
+            & np.isclose(frame["quantile_upper"], 1.0),
             [
                 "rebalance_frequency",
                 "rebalance_interval",

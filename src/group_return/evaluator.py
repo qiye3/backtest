@@ -496,7 +496,8 @@ def _prepare_context(
             horizon_complete=horizon_complete,
         )
     group_definitions = build_group_definitions(
-        settings["grouping"]["quantile_edges"]
+        settings["grouping"]["quantile_edges"],
+        settings["grouping"]["group_aliases"],
     )
     return _EvaluationContext(
         calendar=calendar,

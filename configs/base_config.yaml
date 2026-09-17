@@ -1,6 +1,6 @@
 # 主配置串联 Wind 数据、因子、评价和回测；运行命令为：
 # python -m scripts.run_wind_cache_backtests --config configs/base_config.yaml
-# 默认十分组和绘图展示参数由 src.config 提供，需要调整时可在对应分区覆盖。
+# 默认十组加两个重叠极端组，分组和绘图参数由 src.config 提供。
 
 # 控制本次运行哪些阶段；CLI 不提供阶段覆盖参数。
 run:
@@ -67,7 +67,7 @@ market_data:
 # external_returns:
 #   path: /path/to/daily_returns.parquet
 
-# 默认分组为等权十分组；需要自定义时增加 grouping 分区覆盖默认值。
+# 默认保留 G1–G10，并增加 G0.1 与 G9.9 两个重叠极端组。
 group_return:
   # 评价区间；end 同时是未来收益实现截止日。
   start: "2024-02-01"
@@ -110,7 +110,7 @@ group_return:
   # previous_close 最多允许回看多少个交易日；null 表示不限制。
   max_stale_days: null
 
-# 默认分组为等权十分组；需要自定义时增加 grouping 分区覆盖默认值。
+# 回测仍以 G1–G10 为核心组，同时输出两个重叠极端组。
 simple_backtest:
   start: "2024-02-01"
   end: "2026-09-09"

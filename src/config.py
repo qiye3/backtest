@@ -66,6 +66,7 @@ PLOT_METRICS = {
     "information_ratio",
 }
 DEFAULT_QUANTILE_EDGES = [
+    [0.0, 0.01],
     [0.0, 0.1],
     [0.1, 0.2],
     [0.2, 0.3],
@@ -76,6 +77,21 @@ DEFAULT_QUANTILE_EDGES = [
     [0.7, 0.8],
     [0.8, 0.9],
     [0.9, 1.0],
+    [0.99, 1.0],
+]
+DEFAULT_GROUP_ALIASES = [
+    "G0.1",
+    "G1",
+    "G2",
+    "G3",
+    "G4",
+    "G5",
+    "G6",
+    "G7",
+    "G8",
+    "G9",
+    "G10",
+    "G9.9",
 ]
 DEFAULT_BACKTEST_GROUP_COLORS = [
     "#006837",
@@ -108,6 +124,7 @@ DEFAULT_PARQUET_RETENTION = {
 }
 DEFAULT_GROUPING = {
     "quantile_edges": DEFAULT_QUANTILE_EDGES,
+    "group_aliases": DEFAULT_GROUP_ALIASES,
     "min_stocks": 20,
     "missing_factor_policy": "exclude",
     "weighting": {
@@ -346,6 +363,16 @@ def _merge_config_defaults(
                 pending_sections.append((default_value, value))
             else:
                 target_section[key] = deepcopy(value)
+    for section_name in ["group_return", "simple_backtest", "account_backtest"]:
+        configured_grouping = configured_values.get(section_name, {}).get(
+            "grouping"
+        )
+        if (
+            configured_grouping is not None
+            and "quantile_edges" in configured_grouping
+            and "group_aliases" not in configured_grouping
+        ):
+            merged_config[section_name]["grouping"]["group_aliases"] = None
     return merged_config
 
 
@@ -533,12 +560,25 @@ def _validate_grouping(
     """校验横截面分组和组内权重设置。"""
     expected_keys = {
         "quantile_edges",
+        "group_aliases",
         "min_stocks",
         "missing_factor_policy",
         "weighting",
     }
     _check_keys(settings, expected_keys, expected_keys, location)
-    validate_ranges(settings["quantile_edges"])
+    ranges = validate_ranges(settings["quantile_edges"])
+    aliases = settings["group_aliases"]
+    if aliases is not None:
+        if not isinstance(aliases, list):
+            raise TypeError(f"{location}.group_aliases 必须是列表或 null")
+        if len(aliases) != len(ranges):
+            raise ValueError(
+                f"{location}.group_aliases 必须与 quantile_edges 数量一致"
+            )
+        if any(not isinstance(alias, str) or not alias.strip() for alias in aliases):
+            raise ValueError(f"{location}.group_aliases 只能包含非空字符串")
+        if len(aliases) != len(set(aliases)):
+            raise ValueError(f"{location}.group_aliases 不能重复")
     _positive_integer(settings["min_stocks"], f"{location}.min_stocks")
     _choice(
         settings["missing_factor_policy"],

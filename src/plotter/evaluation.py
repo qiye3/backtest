@@ -103,8 +103,8 @@ def plot_evaluation(
             color=palette,
             width=0.8,
         )
-        labels, standard_deciles = group_labels(definitions)
-        rotate_labels = not standard_deciles and len(definitions) > 6
+        labels, compact_labels = group_labels(definitions)
+        rotate_labels = not compact_labels
         bar_axis.set_xticks(
             np.arange(len(definitions)),
             labels,
@@ -188,10 +188,7 @@ def _plot_group_size_table(
         block = definitions.iloc[
             start_position : start_position + GROUPS_PER_TABLE_BLOCK
         ]
-        group_headers = [
-            f"{definition.group_id}\n{definition.label}"
-            for definition in block.itertuples(index=False)
-        ]
+        group_headers = block["label"].astype(str).tolist()
         mean_sizes = group_observations.loc[
             block["group_id"],
             "mean_group_size",
@@ -203,7 +200,7 @@ def _plot_group_size_table(
         table_rows.append(["Group", *group_headers])
         table_rows.append(["Mean stocks", *size_labels])
 
-    # 固定预留十二组宽度，使默认十组与未来十二组保持相同版式。
+    # 固定预留默认十二组宽度，更多自定义分组再换到下一块。
     column_count = GROUPS_PER_TABLE_BLOCK + 1
     padded_rows = [
         row + [""] * (column_count - len(row))

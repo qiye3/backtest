@@ -8,6 +8,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.group_return.grouping import core_group_ids
+
 SCREENING_COLUMNS = [
     "factor_name",
     "target_type",
@@ -66,7 +68,7 @@ def build_factor_screening_summary(
     records = []
     for factor_name, result in evaluation_results.items():
         factor_quality = result["factor_quality"].iloc[0]
-        group_order = result["definitions"]["group_id"].tolist()
+        group_order = core_group_ids(result["definitions"])
         for ic_summary in result["ic_summary"].itertuples(index=False):
             records.append(
                 _build_horizon_record(

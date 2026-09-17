@@ -12,6 +12,7 @@ import pandas as pd
 
 from src.data.market_data import MarketData
 from src.group_return.evaluator import rowwise_correlation
+from src.group_return.grouping import core_group_ids
 
 
 def evaluate_overall(
@@ -187,9 +188,9 @@ def _factor_return_summary(
     """每个因子和未来周期计算最高分位组减最低分位组收益。"""
     records = []
     for factor_name, result in evaluation_results.items():
-        definitions = result["definitions"].sort_values("quantile_lower")
-        low_group = definitions["group_id"].iloc[0]
-        high_group = definitions["group_id"].iloc[-1]
+        ordered_groups = core_group_ids(result["definitions"])
+        low_group = ordered_groups[0]
+        high_group = ordered_groups[-1]
         summary = result["summary"].pivot(
             index=["horizon_value", "horizon_unit"],
             columns="group_id",

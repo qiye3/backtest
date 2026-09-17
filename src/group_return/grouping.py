@@ -46,32 +46,79 @@ def validate_ranges(ranges: Sequence[Sequence[float]]) -> list[list[float]]:
 
 
 # 按配置顺序生成稳定的分组编号和展示信息。
-def build_group_definitions(ranges: Sequence[Sequence[float]]) -> pd.DataFrame:
+def build_group_definitions(
+    ranges: Sequence[Sequence[float]],
+    aliases: Sequence[str] | None = None,
+) -> pd.DataFrame:
     """
     构造分组定义表。
 
     输入：
     - ranges：独立分位区间序列。
+    - aliases：与区间一一对应的组名；为空时按顺序生成 ``G1``、``G2``。
 
     输出：
     - 返回包含组编号、上下界、标签和名义比例的 DataFrame。
 
     功能和用途：
-    - 为评价明细、汇总和成员表提供一致的 ``G01``、``G02`` 等稳定标识。
+    - 为评价明细、汇总、图像和回测结果提供一致的组名。
     """
     validated_ranges = validate_ranges(ranges)
+    validated_aliases = _validate_aliases(validated_ranges, aliases)
     records = []
-    for group_position, (lower, upper) in enumerate(validated_ranges, start=1):
+    for alias, (lower, upper) in zip(validated_aliases, validated_ranges):
         records.append(
             {
-                "group_id": f"G{group_position:02d}",
+                "group_id": alias,
                 "quantile_lower": lower,
                 "quantile_upper": upper,
-                "label": f"{lower * 100:g}%–{upper * 100:g}%",
+                "label": alias,
+                "range_label": f"{lower * 100:g}%–{upper * 100:g}%",
                 "target_fraction": upper - lower,
             }
         )
     return pd.DataFrame(records)
+
+
+def _validate_aliases(
+    ranges: Sequence[Sequence[float]],
+    aliases: Sequence[str] | None,
+) -> list[str]:
+    """校验可配置组名，并为未配置名称的分组生成顺序编号。"""
+    if aliases is None:
+        return [f"G{position}" for position in range(1, len(ranges) + 1)]
+    if len(aliases) != len(ranges):
+        raise ValueError("group_aliases 必须与 quantile_edges 数量一致")
+    if any(not isinstance(alias, str) for alias in aliases):
+        raise TypeError("group_aliases 只能包含字符串")
+    validated_aliases = [alias.strip() for alias in aliases]
+    if any(not alias for alias in validated_aliases):
+        raise ValueError("group_aliases 不能包含空名称")
+    if len(validated_aliases) != len(set(validated_aliases)):
+        raise ValueError("group_aliases 不能重复")
+    return validated_aliases
+
+
+def core_group_ids(definitions: pd.DataFrame) -> list[str]:
+    """排除嵌套在两端常规组内的极端组，返回核心分组顺序。"""
+    lower_bounds = definitions["quantile_lower"].to_numpy(dtype=float)
+    upper_bounds = definitions["quantile_upper"].to_numpy(dtype=float)
+    low_boundary = np.isclose(lower_bounds, 0)
+    high_boundary = np.isclose(upper_bounds, 1)
+    nested_low_tail = np.zeros(len(definitions), dtype=bool)
+    nested_high_tail = np.zeros(len(definitions), dtype=bool)
+    if low_boundary.any():
+        nested_low_tail = low_boundary & (
+            upper_bounds < upper_bounds[low_boundary].max()
+        )
+    if high_boundary.any():
+        nested_high_tail = high_boundary & (
+            lower_bounds > lower_bounds[high_boundary].min()
+        )
+    return definitions.loc[
+        ~(nested_low_tail | nested_high_tail),
+        "group_id",
+    ].tolist()
 
 
 # 同时完成全部评价日期的有效值筛选、百分位排名和独立分组。
