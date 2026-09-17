@@ -238,11 +238,12 @@ def build_targets(
     context: TargetContext,
     settings: Mapping[str, Any],
     interval: int,
+    collect_details: bool = True,
 ) -> dict[str, Any]:
     """
     矩阵化生成一个因子、一个调仓周期的全部分组目标。
 
-    输入：标准日频因子面板、共享目标上下文、回测配置和对应频率下的调仓间隔。
+    输入：标准日频因子面板、共享目标上下文、回测配置、调仓间隔和明细开关。
     输出：分组定义、动作、成员、各组目标权重和调仓日期。
 
     全 ``NaN`` 目标行表示保持真实旧持仓；全零行表示清仓变现金。
@@ -334,17 +335,19 @@ def build_targets(
         empty_groups=empty_groups,
         settings=settings,
     )
-    members = _build_members(
-        dates=dates,
-        factor_dates=factor_dates,
-        stock_codes=context.stock_codes,
-        definitions=context.definitions,
-        factor_values=factor_values,
-        factor_percentiles=factor_percentiles,
-        group_membership=group_membership,
-        target_values=target_values,
-        enough_stocks=enough_stocks,
-    )
+    members = pd.DataFrame()
+    if collect_details:
+        members = _build_members(
+            dates=dates,
+            factor_dates=factor_dates,
+            stock_codes=context.stock_codes,
+            definitions=context.definitions,
+            factor_values=factor_values,
+            factor_percentiles=factor_percentiles,
+            group_membership=group_membership,
+            target_values=target_values,
+            enough_stocks=enough_stocks,
+        )
     target_weights = {
         group_id: pd.DataFrame(
             target_values[group_position],

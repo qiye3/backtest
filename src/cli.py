@@ -534,6 +534,7 @@ def _calculate_backtest_checkpoint(
         mode=mode,
         max_workers=max_workers,
         return_panel=stage_return_panel,
+        collect_details=config.raw["output"]["save_backtest_details"],
     ):
         checkpoint_paths.update(
             save_backtest_checkpoints(
@@ -628,6 +629,7 @@ def _calculate_strategy_backtest_checkpoints(
         mode=mode,
         max_workers=config.raw["run"]["max_workers"],
         return_panel=return_panel if mode == "simple" else None,
+        collect_details=config.raw["output"]["save_backtest_details"],
     ):
         checkpoint_paths.update(
             save_backtest_checkpoints(

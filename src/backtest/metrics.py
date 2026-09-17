@@ -22,7 +22,6 @@ def annualize_return(total_return: float, years: float, method: str) -> float:
 
 def calculate_metrics(
     result: Mapping[str, Any],
-    gross_result: Mapping[str, Any],
     mode: str,
     metrics_settings: Mapping[str, Any],
     rebalance_frequency: str,
@@ -31,7 +30,7 @@ def calculate_metrics(
     """
     汇总一个分组组合的费后、费前、风险和换手指标。
 
-    输入：费后结果、零费率对照结果、回测模式、指标配置、调仓频率和对应间隔。
+    输入：同时含费后和费前曲线的结果、回测模式、指标配置、调仓频率和对应间隔。
     输出：字段顺序固定的一行指标字典。
     """
     full_curve = result["curves"]["all"]
@@ -47,7 +46,6 @@ def calculate_metrics(
     metrics.update(
         _return_metrics(
             result=result,
-            gross_result=gross_result,
             mode=mode,
             metrics_settings=metrics_settings,
             years=years,
@@ -107,34 +105,39 @@ def _curve_returns(
     curve: pd.DataFrame,
     mode: str,
     benchmark: bool = False,
+    gross: bool = False,
 ) -> pd.Series:
     """从对应模式的曲线提取逐期策略或基准收益。"""
     if mode == "simple":
-        column = (
-            "benchmark_cumulative_return"
-            if benchmark
-            else "cumulative_return"
-        )
+        if benchmark:
+            column = "benchmark_cumulative_return"
+        elif gross:
+            column = "gross_cumulative_return"
+        else:
+            column = "cumulative_return"
         return curve[column].diff()
-    column = "benchmark_nav" if benchmark else "nav"
+    if benchmark:
+        column = "benchmark_nav"
+    elif gross:
+        column = "gross_nav"
+    else:
+        column = "nav"
     return curve[column].pct_change(fill_method=None)
 
 
 def _return_metrics(
     result: Mapping[str, Any],
-    gross_result: Mapping[str, Any],
     mode: str,
     metrics_settings: Mapping[str, Any],
     years: float,
 ) -> dict[str, Any]:
     """计算总收益、年化、回撤、基准和超额收益。"""
     net_curve = result["curves"]["all"]
-    gross_curve = gross_result["curves"]["all"]
     if mode == "simple":
         net_values = net_curve["cumulative_return"]
         net_total_return = float(net_values.iloc[-1])
         gross_total_return = float(
-            gross_curve["cumulative_return"].iloc[-1]
+            net_curve["gross_cumulative_return"].iloc[-1]
         )
         benchmark_total_return = float(
             net_curve["benchmark_cumulative_return"].iloc[-1]
@@ -146,7 +149,7 @@ def _return_metrics(
     else:
         net_values = net_curve["nav"]
         net_total_return = float(net_values.iloc[-1] - 1)
-        gross_total_return = float(gross_curve["nav"].iloc[-1] - 1)
+        gross_total_return = float(net_curve["gross_nav"].iloc[-1] - 1)
         benchmark_total_return = float(net_curve["benchmark_nav"].iloc[-1] - 1)
         excess_total_return = float(
             net_values.iloc[-1] / net_curve["benchmark_nav"].iloc[-1] - 1
@@ -163,8 +166,9 @@ def _return_metrics(
             mode,
         ).dropna()
         gross_period_returns = _curve_returns(
-            gross_result["curves"]["rebalance"],
+            result["curves"]["rebalance"],
             mode,
+            gross=True,
         ).dropna()
         annual_net_basis = float(np.prod(1 + net_period_returns) - 1)
         annual_gross_basis = float(np.prod(1 + gross_period_returns) - 1)

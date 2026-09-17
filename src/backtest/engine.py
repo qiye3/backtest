@@ -44,6 +44,7 @@ def run_backtests(
     mode: str,
     max_workers: int | None = None,
     return_panel: pd.DataFrame | None = None,
+    collect_details: bool = True,
 ) -> dict[str, dict[str, Any]]:
     """
     批量运行一套 simple 或 account 回测配置。
@@ -55,6 +56,7 @@ def run_backtests(
     - mode：``simple`` 或 ``account``。
     - max_workers：1 表示串行，空值使用线程池默认并发数。
     - return_panel：可选的收盘到收盘日收益宽表，仅用于 simple。
+    - collect_details：是否构造成交、持仓和分组成员明细。
 
     输出：
     - 返回按因子组织的分组定义、metrics，以及各周期的动作、成员、目标和
@@ -73,6 +75,7 @@ def run_backtests(
             mode=mode,
             max_workers=max_workers,
             return_panel=return_panel,
+            collect_details=collect_details,
         )
     )
     return {
@@ -89,6 +92,7 @@ def iter_backtests(
     mode: str,
     max_workers: int | None = None,
     return_panel: pd.DataFrame | None = None,
+    collect_details: bool = True,
 ) -> Iterator[tuple[str, dict[str, Any]]]:
     """复用整阶段上下文和线程池，逐因子产出完整回测结果。"""
     context = _prepare_backtest_context(
@@ -108,6 +112,7 @@ def iter_backtests(
                 metrics_settings=metrics_settings,
                 mode=mode,
                 executor=None,
+                collect_details=collect_details,
             )
         return
 
@@ -121,6 +126,7 @@ def iter_backtests(
                 metrics_settings=metrics_settings,
                 mode=mode,
                 executor=executor,
+                collect_details=collect_details,
             )
 
 
@@ -166,6 +172,7 @@ def _run_factor_backtest(
     metrics_settings: Mapping[str, Any],
     mode: str,
     executor: ThreadPoolExecutor | None,
+    collect_details: bool,
 ) -> dict[str, Any]:
     """使用共享上下文完成一个因子的全部周期和分组任务。"""
     target_tasks = [
@@ -174,7 +181,12 @@ def _run_factor_backtest(
     ]
     if executor is None:
         target_results = [
-            _build_target_task(task, context.target, settings)
+            _build_target_task(
+                task,
+                context.target,
+                settings,
+                collect_details,
+            )
             for task in target_tasks
         ]
         group_results = [
@@ -185,6 +197,7 @@ def _run_factor_backtest(
                 metrics_settings,
                 mode,
                 context.need_daily,
+                collect_details,
             )
             for task in _group_tasks(target_results)
         ]
@@ -195,6 +208,7 @@ def _run_factor_backtest(
                 target_tasks,
                 repeat(context.target),
                 repeat(settings),
+                repeat(collect_details),
             )
         )
         group_results = list(
@@ -206,6 +220,7 @@ def _run_factor_backtest(
                 repeat(metrics_settings),
                 repeat(mode),
                 repeat(context.need_daily),
+                repeat(collect_details),
             )
         )
     return _assemble_results(
@@ -226,6 +241,7 @@ def run_weight_backtests(
     rebalance_frequency: str,
     max_workers: int | None = None,
     return_panel: pd.DataFrame | None = None,
+    collect_details: bool = True,
 ) -> dict[str, Any]:
     """直接回测各调仓周期的目标权重，不再构造因子分组。"""
     return next(
@@ -243,6 +259,7 @@ def run_weight_backtests(
             mode=mode,
             max_workers=max_workers,
             return_panel=return_panel,
+            collect_details=collect_details,
         )
     )[1]
 
@@ -257,6 +274,7 @@ def iter_weight_backtests(
     mode: str,
     max_workers: int | None = None,
     return_panel: pd.DataFrame | None = None,
+    collect_details: bool = True,
 ) -> Iterator[tuple[str, dict[str, Any]]]:
     """共享一次价格上下文和线程池，逐策略产出目标权重回测结果。"""
     _validate_mode_settings(settings, mode)
@@ -288,6 +306,7 @@ def iter_weight_backtests(
                 rebalance_frequency=rebalance_frequency,
                 need_daily=need_daily,
                 executor=None,
+                collect_details=collect_details,
             )
         return
 
@@ -302,6 +321,7 @@ def iter_weight_backtests(
                 rebalance_frequency=rebalance_frequency,
                 need_daily=need_daily,
                 executor=executor,
+                collect_details=collect_details,
             )
 
 
@@ -314,6 +334,7 @@ def _run_weight_backtest_with_context(
     rebalance_frequency: str,
     need_daily: bool,
     executor: ThreadPoolExecutor | None,
+    collect_details: bool,
 ) -> dict[str, Any]:
     """使用既有价格上下文完成一个策略的全部调仓周期。"""
     strategy_settings = deepcopy(settings)
@@ -331,6 +352,7 @@ def _run_weight_backtest_with_context(
                 metrics_settings,
                 mode,
                 need_daily,
+                collect_details,
             )
             for task in simulation_tasks
         ]
@@ -344,6 +366,7 @@ def _run_weight_backtest_with_context(
                 repeat(metrics_settings),
                 repeat(mode),
                 repeat(need_daily),
+                repeat(collect_details),
             )
         )
 
@@ -394,6 +417,7 @@ def _build_target_task(
     task: tuple[str, pd.DataFrame, int],
     target_context: TargetContext,
     settings: Mapping[str, Any],
+    collect_details: bool,
 ) -> tuple[str, int, dict[str, Any]]:
     """构造一个因子和一个调仓周期的全部分组目标。"""
     factor_name, factor_panel, interval = task
@@ -402,6 +426,7 @@ def _build_target_task(
         context=target_context,
         settings=settings,
         interval=interval,
+        collect_details=collect_details,
     )
     return factor_name, interval, target_result
 
@@ -429,8 +454,9 @@ def _run_group_task(
     metrics_settings: Mapping[str, Any],
     mode: str,
     need_daily: bool,
+    collect_details: bool,
 ) -> tuple[str, int, str, dict[str, Any], dict[str, Any]]:
-    """运行一个分组组合的费后和零费率对照，并计算指标。"""
+    """运行一个分组组合，优先单次生成费前费后曲线并计算指标。"""
     factor_name, interval, group_id, target_weights = task
     if isinstance(simulation_context, ReturnContext):
         runner = _run_simple_returns_with_context
@@ -438,10 +464,19 @@ def _run_group_task(
         runner = _run_simple_with_context
     else:
         runner = _run_account_with_context
-    result = runner(target_weights, simulation_context, settings, need_daily)
-    if settings["transaction_cost_rate"] == 0:
-        gross_result = result
-    else:
+    result = runner(
+        target_weights,
+        simulation_context,
+        settings,
+        need_daily,
+        collect_details,
+    )
+    gross_curve_is_embedded = mode == "simple" or (
+        mode == "account" and settings["execution"]["policy"] == "ideal"
+    )
+    if not gross_curve_is_embedded and settings["transaction_cost_rate"] == 0:
+        _attach_gross_curves(result, result, mode)
+    elif not gross_curve_is_embedded:
         gross_settings = deepcopy(settings)
         gross_settings["transaction_cost_rate"] = 0.0
         gross_result = runner(
@@ -449,21 +484,21 @@ def _run_group_task(
             simulation_context,
             gross_settings,
             need_daily,
+            False,
         )
+        _attach_gross_curves(result, gross_result, mode)
 
     metrics = {
         "mode": mode,
         "transaction_cost_rate": settings["transaction_cost_rate"],
         **calculate_metrics(
             result=result,
-            gross_result=gross_result,
             mode=mode,
             metrics_settings=metrics_settings,
             rebalance_frequency=settings["rebalance"]["frequency"],
             rebalance_interval=interval,
         ),
     }
-    _attach_gross_curves(result, gross_result, mode)
     group_result = {
         "target_weights": target_weights,
         **result,

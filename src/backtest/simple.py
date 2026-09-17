@@ -59,12 +59,13 @@ def run_simple(
     settings: Mapping[str, Any],
     need_daily: bool = True,
     return_panel: pd.DataFrame | None = None,
+    collect_details: bool = True,
 ) -> dict[str, Any]:
     """
     运行一个目标组合的简易累加收益回测。
 
-    输入：单组目标权重、市场数据、simple 配置、是否计算每日收盘估值，以及
-    可选的外部日收益宽表。
+    输入：单组目标权重、市场数据、simple 配置、是否计算每日收盘估值、
+    可选的外部日收益宽表，以及是否构造成交明细。
     输出：包含事件曲线、交易明细和换手事件的字典。
     """
     if settings["initial_capital"] != 1:
@@ -84,6 +85,7 @@ def run_simple(
             return_context,
             settings,
             need_daily,
+            collect_details,
         )
 
     price_context = prepare_price_context(market_data, settings)
@@ -92,6 +94,7 @@ def run_simple(
         price_context,
         settings,
         need_daily,
+        collect_details,
     )
 
 
@@ -100,6 +103,7 @@ def _run_simple_with_context(
     price_context: PriceContext,
     settings: Mapping[str, Any],
     need_daily: bool,
+    collect_details: bool = True,
 ) -> dict[str, Any]:
     """使用批量任务共享的价格上下文运行一个简易组合。"""
     targets = prepare_targets(target_weights, price_context, settings)
@@ -115,6 +119,8 @@ def _run_simple_with_context(
     previous_benchmark = None
     completed_period_return = 0.0
     period_growth = 1.0
+    gross_completed_period_return = 0.0
+    gross_period_growth = 1.0
     completed_benchmark_return = 0.0
     benchmark_growth = 1.0
     curve_rows = []
@@ -143,6 +149,7 @@ def _run_simple_with_context(
                 prices,
             )
             period_growth *= step_growth
+            gross_period_growth *= step_growth
 
         current_benchmark = benchmark_price(
             price_context,
@@ -181,14 +188,18 @@ def _run_simple_with_context(
                     price_context=price_context,
                     settings=settings,
                     is_initial_event=is_initial_event,
+                    collect_details=collect_details,
                 )
             )
             turnover_rows.append(turnover_row)
-            if not trade_frame.empty:
+            if trade_frame is not None:
                 trade_frames.append(trade_frame)
             traded = True
 
         cumulative_return = completed_period_return + period_growth - 1
+        gross_cumulative_return = (
+            gross_completed_period_return + gross_period_growth - 1
+        )
         benchmark_cumulative_return = (
             completed_benchmark_return + benchmark_growth - 1
         )
@@ -201,6 +212,7 @@ def _run_simple_with_context(
                 "is_rebalance": is_rebalance,
                 "is_terminal": is_terminal,
                 "cumulative_return": cumulative_return,
+                "gross_cumulative_return": gross_cumulative_return,
                 "benchmark_cumulative_return": benchmark_cumulative_return,
                 "cash_weight": 1 - weights.sum(),
             }
@@ -210,6 +222,8 @@ def _run_simple_with_context(
         if is_rebalance:
             completed_period_return = cumulative_return
             period_growth = 1.0
+            gross_completed_period_return = gross_cumulative_return
+            gross_period_growth = 1.0
             completed_benchmark_return = benchmark_cumulative_return
             benchmark_growth = 1.0
         previous_prices = prices
@@ -234,6 +248,7 @@ def _run_simple_returns_with_context(
     return_context: ReturnContext,
     settings: Mapping[str, Any],
     need_daily: bool,
+    collect_details: bool = True,
 ) -> dict[str, Any]:
     """使用外部收盘到收盘日收益运行简易回测。"""
     targets = prepare_targets(target_weights, return_context, settings)
@@ -248,6 +263,8 @@ def _run_simple_returns_with_context(
     previous_position = None
     completed_period_return = 0.0
     period_growth = 1.0
+    gross_completed_period_return = 0.0
+    gross_period_growth = 1.0
     completed_benchmark_return = 0.0
     benchmark_growth = 1.0
     curve_rows = []
@@ -275,6 +292,7 @@ def _run_simple_returns_with_context(
             )
             weights = weights * stock_gross_returns / portfolio_growth
             period_growth *= portfolio_growth
+            gross_period_growth *= portfolio_growth
             benchmark_growth *= benchmark_period_gross_return(
                 return_context,
                 previous_position,
@@ -306,14 +324,18 @@ def _run_simple_returns_with_context(
                     price_context=return_context,
                     settings=settings,
                     is_initial_event=is_initial_event,
+                    collect_details=collect_details,
                 )
             )
             turnover_rows.append(turnover_row)
-            if not trade_frame.empty:
+            if trade_frame is not None:
                 trade_frames.append(trade_frame)
             traded = True
 
         cumulative_return = completed_period_return + period_growth - 1
+        gross_cumulative_return = (
+            gross_completed_period_return + gross_period_growth - 1
+        )
         benchmark_cumulative_return = (
             completed_benchmark_return + benchmark_growth - 1
         )
@@ -326,6 +348,7 @@ def _run_simple_returns_with_context(
                 "is_rebalance": is_rebalance,
                 "is_terminal": is_terminal,
                 "cumulative_return": cumulative_return,
+                "gross_cumulative_return": gross_cumulative_return,
                 "benchmark_cumulative_return": benchmark_cumulative_return,
                 "cash_weight": 1 - weights.sum(),
             }
@@ -334,6 +357,8 @@ def _run_simple_returns_with_context(
         if is_rebalance:
             completed_period_return = cumulative_return
             period_growth = 1.0
+            gross_completed_period_return = gross_cumulative_return
+            gross_period_growth = 1.0
             completed_benchmark_return = benchmark_cumulative_return
             benchmark_growth = 1.0
         previous_position = date_position
@@ -364,7 +389,8 @@ def _execute_simple_rebalance(
     price_context: PriceContext | ReturnContext,
     settings: Mapping[str, Any],
     is_initial_event: bool,
-) -> tuple[np.ndarray, float, dict[str, Any], pd.DataFrame]:
+    collect_details: bool,
+) -> tuple[np.ndarray, float, dict[str, Any], pd.DataFrame | None]:
     """执行一次简易调仓，并生成对应换手和交易明细。"""
     transaction_cost_rate = settings["transaction_cost_rate"]
     if is_initial_event and not settings["charge_initial_cost"]:
@@ -394,16 +420,18 @@ def _execute_simple_rebalance(
             np.abs(weight_changes)[price_sources == "previous_close"].sum()
         ),
     }
-    trade_frame = _simple_trade_frame(
-        weight_changes=weight_changes,
-        prices=prices,
-        price_sources=price_sources,
-        price_positions=price_positions,
-        date_position=date_position,
-        price_kind=price_kind,
-        transaction_cost_rate=transaction_cost_rate,
-        price_context=price_context,
-    )
+    trade_frame = None
+    if collect_details:
+        trade_frame = _simple_trade_frame(
+            weight_changes=weight_changes,
+            prices=prices,
+            price_sources=price_sources,
+            price_positions=price_positions,
+            date_position=date_position,
+            price_kind=price_kind,
+            transaction_cost_rate=transaction_cost_rate,
+            price_context=price_context,
+        )
     return weights, period_growth, turnover_row, trade_frame
 
 
@@ -458,6 +486,7 @@ def _initial_simple_row(event_date: pd.Timestamp, price_kind: str) -> dict[str, 
         "is_rebalance": False,
         "is_terminal": False,
         "cumulative_return": 0.0,
+        "gross_cumulative_return": 0.0,
         "benchmark_cumulative_return": 0.0,
         "cash_weight": 1.0,
     }

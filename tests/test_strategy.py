@@ -196,10 +196,60 @@ class StrategyTests(unittest.TestCase):
             rebalance_frequency="quarterly",
             max_workers=1,
         )
+        zero_cost_settings = {**settings, "transaction_cost_rate": 0.0}
+        gross_simple_result = run_weight_backtests(
+            {1: target_weights},
+            market_data,
+            zero_cost_settings,
+            metrics_settings,
+            mode="simple",
+            rebalance_frequency="quarterly",
+            max_workers=1,
+        )
+        gross_account_result = run_weight_backtests(
+            {1: target_weights},
+            market_data,
+            {**zero_cost_settings, "initial_capital": 1_000_000},
+            metrics_settings,
+            mode="account",
+            rebalance_frequency="quarterly",
+            max_workers=1,
+        )
+        lean_account_result = run_weight_backtests(
+            {1: target_weights},
+            market_data,
+            {**settings, "initial_capital": 1_000_000},
+            metrics_settings,
+            mode="account",
+            rebalance_frequency="quarterly",
+            max_workers=1,
+            collect_details=False,
+        )
 
         self.assertEqual(simple_result["metrics"].iloc[0]["group_id"], "strategy")
         self.assertEqual(account_result["metrics"].iloc[0]["group_id"], "strategy")
         self.assertIn("daily", simple_result["periods"][1]["groups"]["strategy"]["curves"])
+        simple_group = simple_result["periods"][1]["groups"]["strategy"]
+        gross_simple_group = gross_simple_result["periods"][1]["groups"]["strategy"]
+        account_group = account_result["periods"][1]["groups"]["strategy"]
+        gross_account_group = gross_account_result["periods"][1]["groups"]["strategy"]
+        np.testing.assert_allclose(
+            simple_group["curves"]["all"]["gross_cumulative_return"],
+            gross_simple_group["curves"]["all"]["cumulative_return"],
+        )
+        np.testing.assert_allclose(
+            account_group["curves"]["all"]["gross_nav"],
+            gross_account_group["curves"]["all"]["nav"],
+        )
+        lean_account_group = lean_account_result["periods"][1]["groups"][
+            "strategy"
+        ]
+        self.assertTrue(lean_account_group["trades"].empty)
+        self.assertTrue(lean_account_group["holdings"].empty)
+        pd.testing.assert_frame_equal(
+            lean_account_result["metrics"],
+            account_result["metrics"],
+        )
 
         benchmark_weights = pd.DataFrame(
             0.5,

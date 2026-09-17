@@ -23,6 +23,7 @@ from src.backtest.prices import (
 from src.backtest.rebalance import (
     EPSILON,
     constrained_rebalance,
+    drift_weights,
     rebalance_weights,
 )
 from src.data.market_data import MarketData
@@ -72,12 +73,13 @@ def run_account(
     market_data: MarketData,
     settings: Mapping[str, Any],
     need_daily: bool = True,
+    collect_details: bool = True,
 ) -> dict[str, Any]:
     """
     运行一个目标组合的现金和持仓数量账户。
 
-    输入：单组目标权重、市场数据、account 配置和是否计算每日收盘
-    估值。
+    输入：单组目标权重、市场数据、account 配置、是否计算每日收盘估值，
+    以及是否构造成交和持仓明细。
     输出：包含事件曲线、交易、换手和持仓明细的字典。
     """
     if settings["initial_capital"] <= 0:
@@ -88,6 +90,7 @@ def run_account(
         price_context,
         settings,
         need_daily,
+        collect_details,
     )
 
 
@@ -96,6 +99,7 @@ def _run_account_with_context(
     price_context: PriceContext,
     settings: Mapping[str, Any],
     need_daily: bool,
+    collect_details: bool = True,
 ) -> dict[str, Any]:
     """使用批量任务共享的价格上下文运行一个连续账户。"""
     targets = prepare_targets(target_weights, price_context, settings)
@@ -108,12 +112,16 @@ def _run_account_with_context(
     stock_count = len(price_context.stock_codes)
     quantities = np.zeros(stock_count, dtype=float)
     cash = float(settings["initial_capital"])
+    gross_weights = np.zeros(stock_count, dtype=float)
+    gross_nav = 1.0
+    previous_prices = None
     benchmark_basis = None
     curve_rows = []
     trade_frames = []
     turnover_rows = []
     holding_frames = []
     is_initial_event = True
+    calculate_gross_in_same_pass = settings["execution"]["policy"] == "ideal"
 
     for date_position, price_kind, is_rebalance, is_terminal in event_plan(
         targets,
@@ -129,6 +137,13 @@ def _run_account_with_context(
             price_kind,
             held_stocks,
         )
+        if calculate_gross_in_same_pass and previous_prices is not None:
+            gross_weights, gross_growth = drift_weights(
+                gross_weights,
+                previous_prices,
+                prices,
+            )
+            gross_nav *= gross_growth
         holding_values = np.where(
             held_stocks,
             quantities * prices,
@@ -177,12 +192,15 @@ def _run_account_with_context(
                     price_context=price_context,
                     settings=settings,
                     is_initial_event=is_initial_event,
+                    collect_details=collect_details,
                 )
             )
             turnover_rows.append(turnover_row)
-            if not trade_frame.empty:
+            if trade_frame is not None:
                 trade_frames.append(trade_frame)
             traded = True
+            if calculate_gross_in_same_pass:
+                gross_weights = event_target.copy()
 
         held_stocks = quantities > EPSILON
         holding_values = np.where(
@@ -201,23 +219,28 @@ def _run_account_with_context(
                 "is_terminal": is_terminal,
                 "assets": account_assets,
                 "nav": account_assets / settings["initial_capital"],
+                "gross_nav": (
+                    gross_nav if calculate_gross_in_same_pass else np.nan
+                ),
                 "benchmark_nav": current_benchmark / benchmark_basis,
                 "cash": cash,
                 "cash_weight": cash / account_assets,
             }
         )
-        holding_frame = _account_holdings_frame(
-            quantities=quantities,
-            prices=prices,
-            holding_values=holding_values,
-            account_assets=account_assets,
-            price_sources=price_sources,
-            date_position=date_position,
-            price_kind=price_kind,
-            price_context=price_context,
-        )
-        if not holding_frame.empty:
-            holding_frames.append(holding_frame)
+        if collect_details:
+            holding_frame = _account_holdings_frame(
+                quantities=quantities,
+                prices=prices,
+                holding_values=holding_values,
+                account_assets=account_assets,
+                price_sources=price_sources,
+                date_position=date_position,
+                price_kind=price_kind,
+                price_context=price_context,
+            )
+            if not holding_frame.empty:
+                holding_frames.append(holding_frame)
+        previous_prices = prices
         is_initial_event = False
 
     trades = (
@@ -253,7 +276,8 @@ def _execute_account_rebalance(
     price_context: PriceContext,
     settings: Mapping[str, Any],
     is_initial_event: bool,
-) -> tuple[float, np.ndarray, dict[str, Any], pd.DataFrame]:
+    collect_details: bool,
+) -> tuple[float, np.ndarray, dict[str, Any], pd.DataFrame | None]:
     """执行一次账户调仓并生成成交、换手和费用记录。"""
     transaction_cost_rate = settings["transaction_cost_rate"]
     if is_initial_event and not settings["charge_initial_cost"]:
@@ -326,19 +350,21 @@ def _execute_account_rebalance(
             np.abs(weight_changes)[price_sources == "previous_close"].sum()
         ),
     }
-    trade_frame = _account_trade_frame(
-        weight_changes=weight_changes,
-        requested_changes=requested_changes,
-        pretrade_assets=pretrade_assets,
-        reasons=reasons,
-        prices=prices,
-        price_sources=price_sources,
-        price_positions=price_positions,
-        transaction_cost_rate=transaction_cost_rate,
-        date_position=date_position,
-        price_kind=price_kind,
-        price_context=price_context,
-    )
+    trade_frame = None
+    if collect_details:
+        trade_frame = _account_trade_frame(
+            weight_changes=weight_changes,
+            requested_changes=requested_changes,
+            pretrade_assets=pretrade_assets,
+            reasons=reasons,
+            prices=prices,
+            price_sources=price_sources,
+            price_positions=price_positions,
+            transaction_cost_rate=transaction_cost_rate,
+            date_position=date_position,
+            price_kind=price_kind,
+            price_context=price_context,
+        )
     return cash, quantities, turnover_row, trade_frame
 
 
@@ -445,6 +471,7 @@ def _initial_account_row(
         "is_terminal": False,
         "assets": pretrade_assets,
         "nav": 1.0,
+        "gross_nav": 1.0,
         "benchmark_nav": 1.0,
         "cash": cash,
         "cash_weight": 1.0,

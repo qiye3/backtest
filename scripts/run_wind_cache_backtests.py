@@ -181,6 +181,7 @@ def run_frequency(
                 metrics_settings=config.raw["metrics"],
                 mode=mode,
                 max_workers=config.raw["run"]["max_workers"],
+                collect_details=config.raw["output"]["save_backtest_details"],
             )
             save_backtest_results(
                 factor_results,
