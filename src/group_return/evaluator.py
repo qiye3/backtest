@@ -656,10 +656,7 @@ def _prepare_future_return_matrices(
             f"{context.stock_codes[stock_position]}"
         )
 
-    future_returns = source_returns
-    if context.benchmark_returns is not None:
-        future_returns = future_returns - context.benchmark_returns[:, :, None]
-    future_returns = np.where(required_prices, future_returns, np.nan)
+    future_returns = np.where(required_prices, source_returns, np.nan)
     return _FutureReturnMatrices(
         completed_evaluations=completed_evaluations,
         required_prices=required_prices,
@@ -744,6 +741,9 @@ def _calculate_group_return_matrices(
                     group_returns[horizon_position, group_position, valid_dates] = (
                         np.nanmedian(group_return_values, axis=1)
                     )
+    if context.benchmark_returns is not None:
+        # 先形成每组组合收益，再扣除相同评价日和持有期的指数收益。
+        group_returns = group_returns - context.benchmark_returns[:, None, :]
     group_returns = np.where(
         future_matrices.completed_evaluations[:, None, :],
         group_returns,
