@@ -1,0 +1,21 @@
+name: cni_growth100
+factor_name: cni_growth100_score
+implementation:
+  module: examples.code.CniGrowth100Portfolio
+  class: CniGrowth100Portfolio
+benchmark_index: 000906.SH
+rebalance:
+  frequency: quarterly
+  intervals:
+    - 1
+  months:
+    - 2
+    - 5
+    - 8
+    - 11
+  trading_day: 6
+params:
+  top_n: 100
+  max_replacements: 50
+  tilt_strength: 1.0
+  max_weight: 0.10

@@ -20,6 +20,9 @@ STAGE_NAMES = [
     "group_return",
     "simple_backtest",
     "account_backtest",
+    "strategies",
+    "strategy_simple_backtest",
+    "strategy_account_backtest",
     "plotter",
     "overall_evaluation",
 ]
@@ -28,12 +31,16 @@ CALCULATION_STAGES = [
     "group_return",
     "simple_backtest",
     "account_backtest",
+    "strategies",
+    "strategy_simple_backtest",
+    "strategy_account_backtest",
     "overall_evaluation",
 ]
 RUN_KEYS = {*STAGE_NAMES, "max_workers", "refresh_market_data"}
 ROOT_KEYS = {
     "run",
     "factors",
+    "strategies",
     "output",
     "market_data",
     "group_return",
@@ -95,6 +102,9 @@ DEFAULT_PARQUET_RETENTION = {
     "group_return": False,
     "simple_backtest": False,
     "account_backtest": False,
+    "strategy_weights": True,
+    "strategy_simple_backtest": False,
+    "strategy_account_backtest": False,
 }
 DEFAULT_GROUPING = {
     "quantile_edges": DEFAULT_QUANTILE_EDGES,
@@ -109,6 +119,9 @@ DEFAULT_GROUPING = {
 CONFIG_DEFAULTS = {
     "run": {
         "overall_evaluation": False,
+        "strategies": False,
+        "strategy_simple_backtest": False,
+        "strategy_account_backtest": False,
     },
     "output": {
         "save_parquet": dict(DEFAULT_PARQUET_RETENTION),
@@ -170,6 +183,9 @@ CONFIG_DEFAULTS = {
             "summary_quantile": [0.9, 1.0],
             "metric_columns": list(DEFAULT_METRIC_COLUMNS),
         },
+        "strategy": {
+            "enabled": True,
+        },
     },
 }
 
@@ -182,6 +198,7 @@ class RunConfig:
     raw: dict[str, Any]
     output_root: Path
     factor_config_directory: Path | None
+    strategy_config_directory: Path | None
     external_return_path: Path | None
 
 
@@ -266,14 +283,40 @@ def load_config(config_path: str | Path) -> RunConfig:
             resolved_path,
             factors_config["config_directory"],
         )
+    strategy_config_directory = None
+    if run_settings["strategies"]:
+        strategies_config = _section(raw_config, "strategies")
+        _check_keys(
+            strategies_config,
+            {"config_directory", "start", "end"},
+            {"config_directory", "start", "end"},
+            "strategies",
+        )
+        _date_interval(strategies_config, "strategies")
+        strategy_config_directory = _resolve_path(
+            resolved_path,
+            strategies_config["config_directory"],
+        )
     if run_settings["group_return"] or run_settings["overall_evaluation"]:
         _validate_group_return(_section(raw_config, "group_return"))
     for stage in ["simple_backtest", "account_backtest"]:
-        if run_settings[stage]:
+        strategy_stage = f"strategy_{stage}"
+        if run_settings[stage] or run_settings[strategy_stage]:
             _validate_backtest(_section(raw_config, stage), stage)
-    if run_settings["simple_backtest"] or run_settings["account_backtest"]:
+    if any(
+        run_settings[stage]
+        for stage in [
+            "simple_backtest",
+            "account_backtest",
+            "strategy_simple_backtest",
+            "strategy_account_backtest",
+        ]
+    ):
         _validate_metrics(_section(raw_config, "metrics"))
-    if external_return_path is not None and run_settings["simple_backtest"]:
+    if external_return_path is not None and (
+        run_settings["simple_backtest"]
+        or run_settings["strategy_simple_backtest"]
+    ):
         if raw_config["simple_backtest"]["trade_price"] != "close":
             raise ValueError("外部日收益回测要求 simple_backtest.trade_price 为 close")
     if run_settings["plotter"] or run_settings["overall_evaluation"]:
@@ -284,6 +327,7 @@ def load_config(config_path: str | Path) -> RunConfig:
         raw=raw_config,
         output_root=_resolve_path(resolved_path, raw_config["output"]["root"]),
         factor_config_directory=factor_config_directory,
+        strategy_config_directory=strategy_config_directory,
         external_return_path=external_return_path,
     )
 
@@ -566,13 +610,33 @@ def _validate_rebalance_schedule(
 ) -> None:
     """按日度或周度模式校验回测调仓计划。"""
     frequency = settings["frequency"]
-    _choice(frequency, {"daily", "weekly"}, f"{location}.frequency")
+    _choice(
+        frequency,
+        {"daily", "weekly", "quarterly"},
+        f"{location}.frequency",
+    )
     expected_keys = {"frequency", "intervals"}
     if frequency == "weekly":
         expected_keys |= {"weekday", "anchor_date", "holiday_policy"}
+    elif frequency == "quarterly":
+        expected_keys |= {"months", "trading_day"}
     _check_keys(settings, expected_keys, expected_keys, location)
     _positive_integer_list(settings["intervals"], f"{location}.intervals")
     if frequency == "daily":
+        return
+    if frequency == "quarterly":
+        months = settings["months"]
+        if (
+            not isinstance(months, list)
+            or not months
+            or len(months) != len(set(months))
+            or any(not isinstance(month, int) or not 1 <= month <= 12 for month in months)
+        ):
+            raise ValueError(f"{location}.months 必须是唯一的 1 至 12 月份列表")
+        _positive_integer(
+            settings["trading_day"],
+            f"{location}.trading_day",
+        )
         return
     _choice(
         settings["weekday"],
@@ -667,6 +731,7 @@ def _validate_plots(settings: Mapping[str, Any]) -> None:
         "evaluation",
         "simple",
         "account",
+        "strategy",
     }
     _check_keys(settings, expected_keys, expected_keys, "plots")
     formats = settings["formats"]
@@ -695,6 +760,7 @@ def _validate_plots(settings: Mapping[str, Any]) -> None:
     _validate_evaluation_plot(settings["evaluation"])
     _validate_simple_plot(settings["simple"])
     _validate_account_plot(settings["account"])
+    _plot_keys(settings["strategy"], {"enabled"}, "strategy")
 
 
 def _validate_distribution_plot(settings: Mapping[str, Any]) -> None:

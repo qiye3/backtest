@@ -7,6 +7,7 @@ from src.plotter.engine import (
     plot_result_directory,
 )
 from src.plotter.overall import plot_overall_evaluation
+from src.plotter.strategy import plot_strategy_backtest, plot_weight_deviation
 
 __all__ = [
     "plot_factor",
@@ -14,4 +15,6 @@ __all__ = [
     "plot_factors",
     "plot_result_directory",
     "plot_overall_evaluation",
+    "plot_strategy_backtest",
+    "plot_weight_deviation",
 ]

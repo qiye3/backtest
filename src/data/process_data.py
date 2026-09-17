@@ -81,6 +81,13 @@ def build_source_panel(
             trading_calendar,
             asset_codes,
         )
+    if source_kind == "static":
+        return _build_static_panel(
+            source_data,
+            source_fields,
+            trading_calendar,
+            asset_codes,
+        )
     raise ValueError(f"没有对应的面板构造规则: {source_name}")
 
 
@@ -223,14 +230,49 @@ def _build_event_panel(
     - 交易日事件在当天收盘可见，周末事件从下一交易日起可见。
     - 每只股票首次有效事件前保持缺失，不使用未来记录反向填补。
     """
+    column_keys = ["asset_code"]
+    forecast_offsets: Sequence[int] = ()
+    if "forecast_year_offset" in source_data.columns:
+        column_keys = ["forecast_year_offset", "asset_code"]
+        forecast_offsets = tuple(
+            sorted(source_data["forecast_year_offset"].drop_duplicates())
+        )
     event_panel = _pivot_source_fields(
         source_data=source_data,
         source_fields=source_fields,
-        column_keys=["asset_code"],
+        column_keys=column_keys,
         asset_codes=asset_codes,
-        index_codes=(),
+        index_codes=forecast_offsets,
     )
     return _align_events_to_calendar(event_panel, trading_calendar)
+
+
+def _build_static_panel(
+    source_data: pd.DataFrame,
+    source_fields: Sequence[str],
+    trading_calendar: pd.DatetimeIndex,
+    asset_codes: Sequence[str],
+) -> pd.DataFrame:
+    """把证券主数据的静态字段广播到完整交易日历。"""
+    latest_records = _select_latest_records(source_data, ["asset_code"])
+    field_panels = {}
+    for source_field in source_fields:
+        field_values = latest_records.set_index("asset_code")[source_field]
+        field_values = field_values.reindex(asset_codes)
+        repeated_values = np.broadcast_to(
+            field_values.to_numpy(),
+            (len(trading_calendar), len(asset_codes)),
+        ).copy()
+        field_panels[source_field] = pd.DataFrame(
+            repeated_values,
+            index=trading_calendar,
+            columns=pd.Index(asset_codes, name="asset_code"),
+        )
+    return pd.concat(
+        field_panels,
+        axis=1,
+        names=["field", "asset_code"],
+    )
 
 
 # ===================== 财务和区间数据 ===================== #
@@ -515,7 +557,7 @@ def _pivot_source_fields(
         else:
             expected_columns = pd.MultiIndex.from_product(
                 [index_codes, asset_codes],
-                names=["index_code", "asset_code"],
+                names=list(column_keys),
             )
             field_panel = field_panel.reindex(columns=expected_columns)
         field_panels[source_field] = field_panel.sort_index()

@@ -9,9 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 from tqdm.auto import tqdm
 
-from src.backtest import run_backtests
+from src.backtest import run_backtests, run_weight_backtests
 from src.backtest.io import (
     RESULT_FILE_NAMES,
     build_metrics_summary,
@@ -49,7 +50,24 @@ from src.group_return.screening import (
     build_frequency_summaries,
 )
 from src.overall_evaluation import evaluate_overall
-from src.plotter import plot_factor, plot_overall_evaluation
+from src.plotter import (
+    plot_factor,
+    plot_overall_evaluation,
+    plot_strategy_backtest,
+    plot_weight_deviation,
+)
+from src.strategy import (
+    build_strategy_targets,
+    calculate_weight_deviation,
+    load_strategies,
+)
+from src.strategy.evaluation import summarize_weight_deviation
+from src.strategy.io import (
+    TARGET_FILE_NAME,
+    find_strategy_names,
+    load_strategy_targets,
+    save_strategy_targets,
+)
 
 PIPELINE_CACHE_DIRECTORY = ".pipeline_cache"
 
@@ -160,9 +178,53 @@ def _run_pipeline(config: RunConfig, progress: _CliProgress) -> RunSummary:
         stage_counts[stage_name] = len(backtest_paths)
         progress.complete(stage_name)
 
+    strategy_source = config.output_root
+    if run_settings["strategies"]:
+        progress.start("strategies")
+        strategy_names = _calculate_strategy_target_checkpoints(
+            config,
+            factor_source,
+            market_data,
+            cache_root,
+        )
+        strategy_source = cache_root
+        stage_counts["strategies"] = len(strategy_names)
+        progress.complete("strategies")
+    else:
+        strategy_names = find_strategy_names(config.output_root)
+
+    strategy_backtest_sources = {
+        "simple": config.output_root,
+        "account": config.output_root,
+    }
+    for mode in ["simple", "account"]:
+        stage_name = f"strategy_{mode}_backtest"
+        if not run_settings[stage_name]:
+            continue
+        progress.start(stage_name)
+        strategy_paths = _calculate_strategy_backtest_checkpoints(
+            config,
+            strategy_names,
+            strategy_source,
+            market_data,
+            cache_root,
+            mode,
+        )
+        strategy_backtest_sources[mode] = cache_root
+        stage_counts[stage_name] = len(strategy_paths)
+        progress.complete(stage_name)
+
     _save_factor_summary_checkpoint(
         config,
         factor_names,
+        cache_root,
+    )
+    _save_strategy_summary_checkpoint(
+        config,
+        strategy_names,
+        strategy_source,
+        strategy_backtest_sources,
+        market_data,
         cache_root,
     )
 
@@ -176,7 +238,15 @@ def _run_pipeline(config: RunConfig, progress: _CliProgress) -> RunSummary:
             backtest_sources,
             cache_root,
         )
-        stage_counts["plotter"] = len(factor_names)
+        _plot_strategy_checkpoints(
+            config,
+            strategy_names,
+            strategy_source,
+            strategy_backtest_sources,
+            market_data,
+            cache_root,
+        )
+        stage_counts["plotter"] = len(factor_names) + len(strategy_names)
         progress.complete("plotter")
 
     if run_settings["overall_evaluation"]:
@@ -194,11 +264,13 @@ def _run_pipeline(config: RunConfig, progress: _CliProgress) -> RunSummary:
     retained_root = _prepare_retained_checkpoints(
         config,
         factor_names,
+        strategy_names,
         cache_root,
     )
     output_paths = _publish_successful_run(
         config,
         factor_names,
+        strategy_names,
         cache_root,
         retained_root,
     )
@@ -298,6 +370,77 @@ def _calculate_backtest_checkpoint(
     return checkpoint_paths
 
 
+def _calculate_strategy_target_checkpoints(
+    config: RunConfig,
+    factor_source: Path,
+    market_data: MarketData,
+    cache_root: Path,
+) -> tuple[str, ...]:
+    """逐策略读取 Factor、构建目标权重并立即落盘。"""
+    strategies = load_strategies(config.strategy_config_directory)
+    strategy_names = []
+    for strategy in strategies:
+        signal_panel = load_factor_panel(strategy.factor_name, factor_source)
+        strategy_result = build_strategy_targets(
+            strategy=strategy,
+            signal_panel=signal_panel,
+            market_data=market_data,
+            settings=config.raw["strategies"],
+        )
+        save_strategy_targets(strategy_result, cache_root)
+        strategy_names.append(strategy.name)
+    return tuple(strategy_names)
+
+
+def _calculate_strategy_backtest_checkpoints(
+    config: RunConfig,
+    strategy_names: Iterable[str],
+    strategy_source: Path,
+    market_data: MarketData,
+    cache_root: Path,
+    mode: str,
+) -> dict[str, Path]:
+    """逐策略运行目标权重回测，并立即保存内部 checkpoint。"""
+    return_panel = (
+        load_return_panel(config.external_return_path)
+        if mode == "simple" and config.external_return_path is not None
+        else None
+    )
+    settings = config.raw[f"{mode}_backtest"]
+    checkpoint_paths = {}
+    for strategy_name in strategy_names:
+        target_result = load_strategy_targets(strategy_name, strategy_source)
+        if target_result["benchmark_index"] != market_data.benchmark_index:
+            raise ValueError(
+                f"{strategy_name} benchmark_index 必须等于 "
+                "market_data.benchmark_index"
+            )
+        period_targets = {
+            interval: weights.loc[
+                pd.Timestamp(settings["start"]):pd.Timestamp(settings["end"])
+            ]
+            for interval, weights in target_result["periods"].items()
+        }
+        backtest_result = run_weight_backtests(
+            target_weights_by_interval=period_targets,
+            market_data=market_data,
+            settings=settings,
+            metrics_settings=config.raw["metrics"],
+            mode=mode,
+            rebalance_frequency=target_result["rebalance_frequency"],
+            max_workers=config.raw["run"]["max_workers"],
+            return_panel=return_panel,
+        )
+        checkpoint_paths.update(
+            save_backtest_checkpoints(
+                {strategy_name: backtest_result},
+                cache_root / "strategies",
+                mode,
+            )
+        )
+    return checkpoint_paths
+
+
 def _save_factor_summary_checkpoint(
     config: RunConfig,
     factor_names: Iterable[str],
@@ -361,6 +504,176 @@ def _plot_factor_checkpoints(
             evaluation_settings=_evaluation_plot_settings(config),
             backtest_settings=_backtest_plot_settings(config),
         )
+
+
+def _plot_strategy_checkpoints(
+    config: RunConfig,
+    strategy_names: Iterable[str],
+    strategy_source: Path,
+    backtest_sources: Mapping[str, Path],
+    market_data: MarketData,
+    cache_root: Path,
+) -> None:
+    """逐策略、逐调仓周期输出回测图和目标权重偏离图。"""
+    if not config.raw["plots"]["strategy"]["enabled"]:
+        return
+    for strategy_name in strategy_names:
+        target_result = load_strategy_targets(strategy_name, strategy_source)
+        benchmark_weights = market_data.get_panel(
+            "index_weights_monthly",
+            "I_WEIGHT",
+            index_code=target_result["benchmark_index"],
+        )
+        figure_directory = (
+            cache_root / "strategies" / strategy_name / "figures"
+        )
+        for interval, target_weights in target_result["periods"].items():
+            deviation = calculate_weight_deviation(
+                target_weights,
+                benchmark_weights,
+            )
+            interval_label = _strategy_interval_label(
+                target_result["rebalance_frequency"],
+                interval,
+            )
+            plot_weight_deviation(
+                strategy_name=strategy_name,
+                deviation=deviation,
+                settings=config.raw["plots"],
+                output_stem=figure_directory / f"deviation_{interval_label}",
+                rebalance_label=interval_label,
+            )
+            for mode in ["simple", "account"]:
+                backtest_result = _load_strategy_backtest_for_plot(
+                    config,
+                    strategy_name,
+                    backtest_sources[mode],
+                    mode,
+                )
+                if backtest_result is None:
+                    continue
+                plot_strategy_backtest(
+                    strategy_name=strategy_name,
+                    backtest_result=backtest_result,
+                    mode=mode,
+                    interval=interval,
+                    settings=config.raw["plots"],
+                    output_stem=(
+                        figure_directory / f"{mode}_{interval_label}"
+                    ),
+                    backtest_settings=config.raw[f"{mode}_backtest"],
+                    benchmark_index=target_result["benchmark_index"],
+                )
+
+
+def _load_strategy_backtest_for_plot(
+    config: RunConfig,
+    strategy_name: str,
+    result_source: Path,
+    mode: str,
+) -> dict[str, Any] | None:
+    """读取本次策略 checkpoint 或已发布的策略回测结果。"""
+    if config.raw["run"][f"strategy_{mode}_backtest"]:
+        return load_backtest_checkpoint(
+            strategy_name,
+            result_source / "strategies",
+            mode,
+        )
+    return load_backtest_result(
+        strategy_name,
+        result_source / "strategies",
+        mode,
+    )
+
+
+def _save_strategy_summary_checkpoint(
+    config: RunConfig,
+    strategy_names: Iterable[str],
+    strategy_source: Path,
+    backtest_sources: Mapping[str, Path],
+    market_data: MarketData,
+    cache_root: Path,
+) -> tuple[Path, ...]:
+    """生成每个调仓频率一张、每个策略一行的宽表。"""
+    summaries: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for strategy_name in strategy_names:
+        target_result = load_strategy_targets(strategy_name, strategy_source)
+        benchmark_weights = market_data.get_panel(
+            "index_weights_monthly",
+            "I_WEIGHT",
+            index_code=target_result["benchmark_index"],
+        )
+        mode_results = {
+            mode: _load_strategy_backtest_for_plot(
+                config,
+                strategy_name,
+                backtest_sources[mode],
+                mode,
+            )
+            for mode in ["simple", "account"]
+        }
+        for interval, target_weights in target_result["periods"].items():
+            deviation = calculate_weight_deviation(
+                target_weights,
+                benchmark_weights,
+            )
+            summary_row = {
+                "strategy_name": strategy_name,
+                "factor_name": target_result["factor_name"],
+                "benchmark_index": target_result["benchmark_index"],
+                "rebalance_frequency": target_result["rebalance_frequency"],
+                "rebalance_interval": interval,
+                **summarize_weight_deviation(deviation),
+            }
+            for mode, mode_result in mode_results.items():
+                if mode_result is not None:
+                    summary_row.update(
+                        _strategy_metric_columns(mode, mode_result, interval)
+                    )
+            summary_key = (target_result["rebalance_frequency"], interval)
+            summaries.setdefault(summary_key, []).append(summary_row)
+
+    output_paths = []
+    for (frequency, interval), rows in summaries.items():
+        interval_label = _strategy_interval_label(frequency, interval)
+        output_path = cache_root / f"strategy_summary_{interval_label}.csv"
+        pd.DataFrame(rows).to_csv(output_path, index=False)
+        output_paths.append(output_path)
+    return tuple(output_paths)
+
+
+def _strategy_metric_columns(
+    mode: str,
+    result: Mapping[str, Any],
+    interval: int,
+) -> dict[str, Any]:
+    """提取策略汇总表需要的一行 simple 或 account 指标。"""
+    metric_row = result["metrics"].loc[
+        result["metrics"]["rebalance_interval"] == interval
+    ].iloc[0]
+    metric_names = [
+        "total_return",
+        "annual_return",
+        "sharpe",
+        "max_drawdown",
+        "annual_turnover",
+        "benchmark_total_return",
+        "excess_total_return",
+        "tracking_error",
+        "information_ratio",
+    ]
+    return {
+        f"{mode}_{metric_name.replace('annual_turnover', 'turnover')}": (
+            metric_row[metric_name]
+        )
+        for metric_name in metric_names
+    }
+
+
+def _strategy_interval_label(frequency: str, interval: int) -> str:
+    """生成策略图和汇总文件使用的稳定调仓周期名称。"""
+    suffixes = {"daily": "d", "weekly": "w", "quarterly": "q"}
+    return f"{frequency}_{interval}{suffixes[frequency]}"
 
 
 def _load_backtest_for_plot(
@@ -434,6 +747,7 @@ def _run_overall_evaluation(
 def _prepare_retained_checkpoints(
     config: RunConfig,
     factor_names: Iterable[str],
+    strategy_names: Iterable[str],
     cache_root: Path,
 ) -> Path:
     """按最终明细开关在发布前生成可直接替换的 Parquet。"""
@@ -457,12 +771,32 @@ def _prepare_retained_checkpoints(
                 mode,
                 save_details=config.raw["output"]["save_backtest_details"],
             )
+    for mode in ["simple", "account"]:
+        stage_name = f"strategy_{mode}_backtest"
+        if not (
+            config.raw["run"][stage_name]
+            and config.raw["output"]["save_parquet"][stage_name]
+        ):
+            continue
+        for strategy_name in strategy_names:
+            result = load_backtest_checkpoint(
+                strategy_name,
+                cache_root / "strategies",
+                mode,
+            )
+            save_backtest_results(
+                {strategy_name: result},
+                retained_root / "strategies",
+                mode,
+                save_details=config.raw["output"]["save_backtest_details"],
+            )
     return retained_root
 
 
 def _publish_successful_run(
     config: RunConfig,
     factor_names: Iterable[str],
+    strategy_names: Iterable[str],
     cache_root: Path,
     retained_root: Path,
 ) -> dict[str, tuple[Path, ...]]:
@@ -495,6 +829,16 @@ def _publish_successful_run(
         ]:
             (config.output_root / legacy_summary_name).unlink(missing_ok=True)
 
+    strategy_summary_paths = sorted(cache_root.glob("strategy_summary_*.csv"))
+    if strategy_summary_paths:
+        output_paths["strategy_summary"] = tuple(
+            _publish_file(
+                summary_path,
+                config.output_root / summary_path.name,
+            )
+            for summary_path in strategy_summary_paths
+        )
+
     for stage_name, file_name in [
         ("factors", FACTOR_FILE_NAME),
         ("group_return", GROUP_RETURN_FILE_NAME),
@@ -524,6 +868,57 @@ def _publish_successful_run(
             for factor_name in factor_names
         )
         output_paths[stage_name] = published
+
+    if config.raw["run"]["strategies"]:
+        if config.raw["output"]["save_parquet"]["strategy_weights"]:
+            output_paths["strategies"] = tuple(
+                _publish_file(
+                    cache_root
+                    / "strategies"
+                    / strategy_name
+                    / TARGET_FILE_NAME,
+                    config.output_root
+                    / "strategies"
+                    / strategy_name
+                    / TARGET_FILE_NAME,
+                )
+                for strategy_name in strategy_names
+            )
+        else:
+            for strategy_name in strategy_names:
+                target_path = (
+                    config.output_root
+                    / "strategies"
+                    / strategy_name
+                    / TARGET_FILE_NAME
+                )
+                target_path.unlink(missing_ok=True)
+
+    for mode in ["simple", "account"]:
+        stage_name = f"strategy_{mode}_backtest"
+        if not config.raw["run"][stage_name]:
+            continue
+        file_name = RESULT_FILE_NAMES[mode]
+        if not config.raw["output"]["save_parquet"][stage_name]:
+            for strategy_name in strategy_names:
+                result_path = (
+                    config.output_root
+                    / "strategies"
+                    / strategy_name
+                    / file_name
+                )
+                result_path.unlink(missing_ok=True)
+            continue
+        output_paths[stage_name] = tuple(
+            _publish_file(
+                retained_root / "strategies" / strategy_name / file_name,
+                config.output_root
+                / "strategies"
+                / strategy_name
+                / file_name,
+            )
+            for strategy_name in strategy_names
+        )
 
     if config.raw["run"]["plotter"]:
         output_paths["plotter"] = tuple(
@@ -570,6 +965,9 @@ def _enabled_progress_stages(config: RunConfig) -> tuple[str, ...]:
         "group_return",
         "simple_backtest",
         "account_backtest",
+        "strategies",
+        "strategy_simple_backtest",
+        "strategy_account_backtest",
         "overall_evaluation",
     }
     stages = []
@@ -582,6 +980,9 @@ def _enabled_progress_stages(config: RunConfig) -> tuple[str, ...]:
             "group_return",
             "simple_backtest",
             "account_backtest",
+            "strategies",
+            "strategy_simple_backtest",
+            "strategy_account_backtest",
             "plotter",
             "overall_evaluation",
         ]
@@ -599,6 +1000,9 @@ def _load_market_data(config: RunConfig) -> MarketData | None:
             "group_return",
             "simple_backtest",
             "account_backtest",
+            "strategies",
+            "strategy_simple_backtest",
+            "strategy_account_backtest",
             "overall_evaluation",
         ]
     )
@@ -632,7 +1036,7 @@ def main() -> None:
     config = load_config(arguments.config)
     summary = run(config, show_progress=True)
     for stage_name, count in summary.stage_counts.items():
-        print(f"{stage_name}: {count} factor(s)")
+        print(f"{stage_name}: {count} item(s)")
 
 
 if __name__ == "__main__":

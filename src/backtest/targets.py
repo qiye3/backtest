@@ -103,7 +103,7 @@ def rebalance_dates(
     initial_entry: str,
 ) -> pd.DatetimeIndex:
     """
-    按日度或固定锚定周规则构造一个调仓周期的真实交易日。
+    按日度、固定锚定周或季度月内交易日规则构造真实调仓日。
 
     输入：交易日历、回测区间、调仓规则、对应频率下的间隔和首次建仓方式。
     输出：按时间升序排列的调仓交易日。
@@ -118,13 +118,20 @@ def rebalance_dates(
     if available_dates.empty:
         raise ValueError("回测配置区间内没有交易日")
 
-    if rebalance["frequency"] == "daily":
+    frequency = rebalance["frequency"]
+    if frequency == "daily":
         dates = pd.DatetimeIndex(available_dates[::interval], name="date")
-    else:
+    elif frequency == "weekly":
         dates = _weekly_rebalance_dates(
             calendar=calendar,
             start_date=start_date,
             end_date=end_date,
+            rebalance=rebalance,
+            interval=interval,
+        )
+    else:
+        dates = _quarterly_rebalance_dates(
+            available_dates=available_dates,
             rebalance=rebalance,
             interval=interval,
         )
@@ -133,6 +140,32 @@ def rebalance_dates(
     if dates.empty:
         raise ValueError("回测区间内没有调仓日")
     return dates
+
+
+def _quarterly_rebalance_dates(
+    available_dates: pd.DatetimeIndex,
+    rebalance: Mapping[str, Any],
+    interval: int,
+) -> pd.DatetimeIndex:
+    """选择配置月份的第 N 个交易日，并按季度序列应用间隔。"""
+    configured_months = set(rebalance["months"])
+    selected_dates = []
+    calendar_frame = pd.DataFrame({"date": available_dates})
+    calendar_frame["year"] = available_dates.year
+    calendar_frame["month"] = available_dates.month
+    eligible_months = calendar_frame.loc[
+        calendar_frame["month"].isin(configured_months)
+    ]
+    for _, monthly_dates in eligible_months.groupby(
+        ["year", "month"],
+        sort=True,
+    ):
+        trading_day_position = rebalance["trading_day"] - 1
+        if len(monthly_dates) > trading_day_position:
+            selected_dates.append(
+                monthly_dates.iloc[trading_day_position]["date"]
+            )
+    return pd.DatetimeIndex(selected_dates[::interval], name="date")
 
 
 def _weekly_rebalance_dates(

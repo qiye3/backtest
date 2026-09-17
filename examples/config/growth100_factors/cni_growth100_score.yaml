@@ -1,0 +1,4 @@
+name: cni_growth100_score
+implementation:
+  module: examples.code.CniGrowth100Factor
+  class: CniGrowth100Factor

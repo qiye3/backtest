@@ -23,6 +23,94 @@ SYNTHETIC_DATA_ROOT = PROJECT_ROOT / "examples" / "data"
 class MarketDataCacheTests(unittest.TestCase):
     """验证共享、扩容、切片和来源口径冲突。"""
 
+    def test_static_fields_and_forecast_horizons_share_cache(self) -> None:
+        """证券主数据应广播到日频，多期限预期缓存可按请求切片。"""
+        with TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory)
+            data_root = workspace / "raw_data"
+            cache_root = workspace / "market_cache"
+            shutil.copytree(SYNTHETIC_DATA_ROOT, data_root)
+            self._add_static_and_consensus_data(data_root)
+
+            config_data = self._market_config(data_root, cache_root)
+            config_data["market_data"]["sources"].update(
+                {
+                    "stock_basic": {"fields": ["LISTDATE"]},
+                    "consensus_suntime": {
+                        "forecast_year_offsets": [0, 1],
+                        "fields": ["con_roe"],
+                    },
+                }
+            )
+            config_path = workspace / "growth.yaml"
+            self._write_config(config_path, config_data)
+            market_data = MarketData.from_yaml(config_path)
+
+            listing_dates = market_data.get_panel("stock_basic", "LISTDATE")
+            self.assertEqual(
+                listing_dates.loc[pd.Timestamp("2024-01-02"), "000001.SZ"],
+                pd.Timestamp("2020-01-02"),
+            )
+            current_roe = market_data.get_panel(
+                "consensus_suntime",
+                "con_roe",
+                forecast_year_offset=0,
+            )
+            next_roe = market_data.get_panel(
+                "consensus_suntime",
+                "con_roe",
+                forecast_year_offset=1,
+            )
+            self.assertEqual(current_roe.loc["2024-02-01", "000001.SZ"], 10.0)
+            self.assertEqual(next_roe.loc["2024-02-01", "000001.SZ"], 12.0)
+
+            metadata = json.loads(
+                (cache_root / "consensus_suntime.meta.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(metadata["forecast_year_offsets"], [0, 1])
+
+            subset_config = deepcopy(config_data)
+            subset_config["market_data"]["sources"]["consensus_suntime"][
+                "forecast_year_offsets"
+            ] = [0]
+            self._write_config(config_path, subset_config)
+            with patch(
+                "src.data.market_data.load_data",
+                side_effect=AssertionError("期限子集请求不应重建缓存"),
+            ):
+                subset_data = MarketData.from_yaml(config_path)
+            subset_roe = subset_data.get_panel(
+                "consensus_suntime",
+                "con_roe",
+                forecast_year_offset=0,
+            )
+            pd.testing.assert_frame_equal(
+                subset_roe,
+                current_roe,
+                check_column_type=False,
+            )
+
+            legacy_config = deepcopy(subset_config)
+            consensus_config = legacy_config["market_data"]["sources"][
+                "consensus_suntime"
+            ]
+            consensus_config.pop("forecast_year_offsets")
+            consensus_config["forecast_year_offset"] = 0
+            self._write_config(config_path, legacy_config)
+            with patch(
+                "src.data.market_data.load_data",
+                side_effect=AssertionError("单期限兼容请求不应重建缓存"),
+            ):
+                legacy_data = MarketData.from_yaml(config_path)
+            legacy_roe = legacy_data.get_panel("consensus_suntime", "con_roe")
+            pd.testing.assert_frame_equal(
+                legacy_roe,
+                current_roe,
+                check_column_type=False,
+            )
+
     def test_different_yaml_files_share_and_expand_source_cache(self) -> None:
         """不同 YAML 应复用同一路径，并只为新增字段重建对应来源。"""
         with TemporaryDirectory() as temporary_directory:
@@ -236,6 +324,56 @@ class MarketDataCacheTests(unittest.TestCase):
         quote_data = pd.read_csv(quote_path)
         quote_data["S_DQ_VOLUME"] = 1000.0
         quote_data.to_csv(quote_path, index=False)
+
+    @staticmethod
+    def _add_static_and_consensus_data(data_root: Path) -> None:
+        """补充成长100所需的上市日和当年、次年一致预期测试数据。"""
+        member_paths = [
+            data_root / "index" / "members" / "000906.SH.csv",
+            data_root / "index" / "members" / "000852.SH.csv",
+        ]
+        stock_codes = sorted(
+            {
+                stock_code
+                for member_path in member_paths
+                for stock_code in pd.read_csv(member_path)[
+                    "s_con_windcode"
+                ].tolist()
+            }
+        )
+        basic_directory = data_root / "stock" / "meta"
+        basic_directory.mkdir(parents=True)
+        pd.DataFrame(
+            {
+                "stock_code": stock_codes,
+                "LISTDATE": 20200102,
+            }
+        ).to_csv(basic_directory / "basic_desc.csv", index=False)
+
+        consensus_records = []
+        for stock_code in stock_codes:
+            consensus_records.extend(
+                [
+                    {
+                        "con_date": 20240201,
+                        "stock_code": stock_code,
+                        "con_year": 2024,
+                        "con_roe": 10.0,
+                    },
+                    {
+                        "con_date": 20240201,
+                        "stock_code": stock_code,
+                        "con_year": 2025,
+                        "con_roe": 12.0,
+                    },
+                ]
+            )
+        consensus_directory = data_root / "stock" / "consensus" / "suntime"
+        consensus_directory.mkdir(parents=True)
+        pd.DataFrame(consensus_records).to_csv(
+            consensus_directory / "suntime_2024.csv",
+            index=False,
+        )
 
     @staticmethod
     def _cache_times(cache_root: Path) -> dict[str, int]:

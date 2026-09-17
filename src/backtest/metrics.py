@@ -224,10 +224,12 @@ def _risk_metrics(
         periods_per_year = (
             metrics_settings["annual_trading_days"] / rebalance_interval
         )
-    else:
+    elif rebalance_frequency == "weekly":
         periods_per_year = (
             metrics_settings["annual_weeks"] / rebalance_interval
         )
+    else:
+        periods_per_year = 4 / rebalance_interval
     period_risk_free = np.expm1(
         np.log1p(metrics_settings["risk_free_rate"]) / periods_per_year
     )

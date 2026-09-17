@@ -126,6 +126,98 @@ def run_backtests(
     )
 
 
+def run_weight_backtests(
+    target_weights_by_interval: Mapping[int, pd.DataFrame],
+    market_data: MarketData,
+    settings: Mapping[str, Any],
+    metrics_settings: Mapping[str, Any],
+    mode: str,
+    rebalance_frequency: str,
+    max_workers: int | None = None,
+    return_panel: pd.DataFrame | None = None,
+) -> dict[str, Any]:
+    """直接回测各调仓周期的目标权重，不再构造因子分组。"""
+    _validate_mode_settings(settings, mode)
+    if mode == "account" and return_panel is not None:
+        raise ValueError("account backtest 不接受外部收益面板")
+    if return_panel is not None and settings["trade_price"] != "close":
+        raise ValueError("外部日收益回测要求 trade_price 为 close")
+
+    if mode == "simple" and return_panel is not None:
+        simulation_context = prepare_return_context(
+            return_panel,
+            market_data,
+            settings,
+        )
+    else:
+        simulation_context = prepare_price_context(market_data, settings)
+    need_daily = (
+        settings["curve_frequency"] in {"daily", "both"}
+        or metrics_settings["return_frequency"] == "daily"
+    )
+    strategy_settings = deepcopy(settings)
+    strategy_settings["rebalance"] = {"frequency": rebalance_frequency}
+    simulation_tasks = [
+        ("strategy", interval, "strategy", target_weights)
+        for interval, target_weights in target_weights_by_interval.items()
+    ]
+    if max_workers == 1:
+        simulation_results = [
+            _run_group_task(
+                task,
+                simulation_context,
+                strategy_settings,
+                metrics_settings,
+                mode,
+                need_daily,
+            )
+            for task in simulation_tasks
+        ]
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            simulation_results = list(
+                executor.map(
+                    _run_group_task,
+                    simulation_tasks,
+                    repeat(simulation_context),
+                    repeat(strategy_settings),
+                    repeat(metrics_settings),
+                    repeat(mode),
+                    repeat(need_daily),
+                )
+            )
+
+    metrics = []
+    periods = {}
+    for _, interval, group_id, group_result, metric_values in simulation_results:
+        target_dates = target_weights_by_interval[interval].index
+        periods[interval] = {
+            "actions": pd.DataFrame(
+                {
+                    "date": target_dates,
+                    "action": "rebalance",
+                }
+            ),
+            "groups": {group_id: group_result},
+        }
+        metrics.append(
+            {
+                "group_id": group_id,
+                "rebalance_frequency": rebalance_frequency,
+                "rebalance_interval": interval,
+                **metric_values,
+            }
+        )
+    return {
+        "definitions": pd.DataFrame(
+            {"group_id": ["strategy"], "label": ["Strategy"]}
+        ),
+        "metrics": pd.DataFrame(metrics),
+        "rebalance_frequency": rebalance_frequency,
+        "periods": periods,
+    }
+
+
 def _validate_mode_settings(settings: Mapping[str, Any], mode: str) -> None:
     """检查决定引擎行为的模式约束。"""
     if mode not in {"simple", "account"}:

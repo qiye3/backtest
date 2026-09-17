@@ -15,7 +15,14 @@ from typing import Any, Literal, Mapping, Sequence
 
 import pandas as pd
 
-SourceKind = Literal["daily", "event", "financial", "interval", "index_weight"]
+SourceKind = Literal[
+    "daily",
+    "event",
+    "financial",
+    "interval",
+    "index_weight",
+    "static",
+]
 
 
 @dataclass(frozen=True)
@@ -58,6 +65,7 @@ class DataSourceSpec:
     interval_end_column: str | None = None
     forecast_period_column: str | None = None
     operation_time_column: str | None = "OPDATE"
+    static_date_columns: tuple[str, ...] = ()
 
 
 DATA_SOURCE_SPECS: dict[str, DataSourceSpec] = {
@@ -180,6 +188,16 @@ DATA_SOURCE_SPECS: dict[str, DataSourceSpec] = {
         interval_end_column="end_date",
         operation_time_column=None,
     ),
+    "stock_basic": DataSourceSpec(
+        relative_directory="stock/meta",
+        file_pattern="basic_desc.csv",
+        kind="static",
+        date_column=None,
+        asset_column="stock_code",
+        annual_files=False,
+        operation_time_column=None,
+        static_date_columns=("LISTDATE", "DELISTDATE"),
+    ),
     "free_float": DataSourceSpec(
         relative_directory="stock/ownership",
         file_pattern="free_float_*.csv",
@@ -231,7 +249,7 @@ def load_data(
     - data_root：包含 ``stock`` 和 ``index`` 子目录的原始数据根。
     - source_name：``DATA_SOURCE_SPECS`` 中定义的标准来源名。
     - source_config：该来源的 YAML 配置，必须包含 ``fields``；指数来源还包含
-      ``codes``，可选 ``filters``，一致预期来源必须包含 ``forecast_year_offset``。
+      ``codes``，可选 ``filters``；一致预期来源声明一个或多个预测年度偏移。
     - start_date、end_date：最终面板日期范围；调用方应把因子预热期计入开始日。
     - universe_codes：中证800与中证1000历史成份并集，个股记录和指数权重据此裁剪。
 
@@ -462,11 +480,17 @@ def _normalize_source_chunk(
         normalized_data["end_date"] = _parse_yyyymmdd(
             normalized_data[source_spec.interval_end_column]
         )
-    else:
+    elif source_spec.kind != "static":
         normalized_data["date"] = _parse_yyyymmdd(normalized_data[source_spec.date_column])
         if source_spec.actual_date_column is not None:
             actual_dates = _parse_yyyymmdd(normalized_data[source_spec.actual_date_column])
             normalized_data["date"] = actual_dates.combine_first(normalized_data["date"])
+
+    for date_column in source_spec.static_date_columns:
+        if date_column in normalized_data.columns:
+            normalized_data[date_column] = _parse_yyyymmdd(
+                normalized_data[date_column]
+            )
 
     if source_spec.asset_column is None:
         normalized_data["asset_code"] = file_index_code
@@ -493,10 +517,11 @@ def _normalize_source_chunk(
         end_date=end_date,
     )
     if source_spec.forecast_period_column is not None:
-        normalized_data = _filter_forecast_year(
+        normalized_data = _filter_forecast_years(
             normalized_data=normalized_data,
             forecast_values=normalized_data[source_spec.forecast_period_column],
-            year_offset=int(source_config["forecast_year_offset"]),
+            year_offsets=_forecast_year_offsets(source_config),
+            preserve_offset="forecast_year_offsets" in source_config,
         )
 
     if source_spec.asset_column is not None:
@@ -528,6 +553,8 @@ def _filter_source_dates(
     - 日频记录严格限制在配置区间；事件和财务数据额外保留开始日前一年作为首日状态。
     - 区间记录只保留与目标日期范围相交的记录，空结束日视为持续有效。
     """
+    if source_kind == "static":
+        return normalized_data
     if source_kind == "interval":
         overlaps_start = normalized_data["end_date"].isna()
         overlaps_start |= normalized_data["end_date"] > start_date
@@ -545,10 +572,18 @@ def _filter_source_dates(
 
 
 # 选择观察日对应偏移年度的一致预期记录。
-def _filter_forecast_year(
+def _forecast_year_offsets(source_config: Mapping[str, Any]) -> tuple[int, ...]:
+    """把单年度或多年度一致预期配置统一为偏移元组。"""
+    if "forecast_year_offsets" in source_config:
+        return tuple(int(offset) for offset in source_config["forecast_year_offsets"])
+    return (int(source_config["forecast_year_offset"]),)
+
+
+def _filter_forecast_years(
     normalized_data: pd.DataFrame,
     forecast_values: pd.Series,
-    year_offset: int,
+    year_offsets: tuple[int, ...],
+    preserve_offset: bool,
 ) -> pd.DataFrame:
     """
     按观察日年份选择一致预期报告年度。
@@ -556,7 +591,7 @@ def _filter_forecast_year(
     输入：
     - normalized_data：包含统一 ``date`` 的一致预期记录。
     - forecast_values：朝阳永续年份或 Wind 预计报告期字段。
-    - year_offset：相对观察日的年度偏移，0 为当年，1 为下一年。
+    - year_offsets：相对观察日的年度偏移，0 为当年，1 为下一年。
 
     输出：
     - 返回预测年度等于 ``date.year + year_offset`` 的记录。
@@ -567,8 +602,13 @@ def _filter_forecast_year(
     """
     forecast_text = forecast_values.astype("string").str.replace(r"\.0$", "", regex=True)
     forecast_years = pd.to_numeric(forecast_text.str[:4], errors="coerce")
-    target_years = normalized_data["date"].dt.year + year_offset
-    return normalized_data[forecast_years == target_years]
+    forecast_offsets = forecast_years - normalized_data["date"].dt.year
+    selected_data = normalized_data[forecast_offsets.isin(year_offsets)].copy()
+    if preserve_offset:
+        selected_data["forecast_year_offset"] = forecast_offsets.loc[
+            selected_data.index
+        ].astype(int)
+    return selected_data
 
 
 # 将 Wind 风格的八位日期转换成 pandas 日期类型。

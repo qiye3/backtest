@@ -194,6 +194,7 @@ class MarketData:
         source_name: str,
         field_name: str,
         index_code: str | None = None,
+        forecast_year_offset: int | None = None,
     ) -> pd.DataFrame:
         """
         获取 Factors 或回测需要的单字段面板。
@@ -203,6 +204,7 @@ class MarketData:
         - field_name：来源内的字段名，例如 ``S_DQ_ADJCLOSE``；历史成员使用
           ``membership``。
         - index_code：指数权重或指数成员来源必须指定的指数代码；普通来源省略。
+        - forecast_year_offset：多期限一致预期来源必须指定的预测年度偏移。
 
         输出：
         - 返回索引为 ``calendar``、列为股票或指数代码的二维 DataFrame。
@@ -229,6 +231,21 @@ class MarketData:
             )
         elif index_code is not None:
             raise ValueError(f"该来源不使用 index_code: {source_name}")
+        if "forecast_year_offset" in field_panel.columns.names:
+            if forecast_year_offset is None:
+                raise ValueError(
+                    f"该来源必须指定 forecast_year_offset: {source_name}"
+                )
+            field_panel = field_panel.xs(
+                forecast_year_offset,
+                axis=1,
+                level="forecast_year_offset",
+                drop_level=True,
+            )
+        elif forecast_year_offset is not None:
+            raise ValueError(
+                f"该来源不使用 forecast_year_offset: {source_name}"
+            )
         return field_panel
 
 
@@ -320,10 +337,27 @@ def _validate_market_data_config(market_data_config: Mapping[str, Any]) -> None:
         if source_spec.index_files and not source_config["codes"]:
             raise ValueError(f"指数来源必须配置 codes: {source_name}")
         if source_spec.forecast_period_column is not None:
-            if "forecast_year_offset" not in source_config:
+            forecast_keys = {
+                "forecast_year_offset",
+                "forecast_year_offsets",
+            } & source_config.keys()
+            if len(forecast_keys) != 1:
                 raise ValueError(
-                    f"一致预期来源必须配置 forecast_year_offset: {source_name}"
+                    "一致预期来源必须配置一个 forecast_year_offset 或 "
+                    f"forecast_year_offsets: {source_name}"
                 )
+            if "forecast_year_offsets" in source_config:
+                forecast_offsets = source_config["forecast_year_offsets"]
+                if (
+                    not isinstance(forecast_offsets, list)
+                    or not forecast_offsets
+                    or len(forecast_offsets) != len(set(forecast_offsets))
+                    or any(not isinstance(offset, int) for offset in forecast_offsets)
+                ):
+                    raise ValueError(
+                        "forecast_year_offsets 必须是非空且不重复的整数列表: "
+                        f"{source_name}"
+                    )
 
 
 # ===================== 共享缓存请求 ===================== #
@@ -332,7 +366,6 @@ SEMANTIC_METADATA_KEYS = (
     "source_root",
     "universe_indices",
     "filters",
-    "forecast_year_offset",
 )
 
 
@@ -350,9 +383,7 @@ def _source_metadata(
             source_config.get("filters", {}).items()
         )
     }
-    forecast_year_offset = source_config.get("forecast_year_offset")
-    if forecast_year_offset is not None:
-        forecast_year_offset = int(forecast_year_offset)
+    forecast_year_offsets = _configured_forecast_offsets(source_config)
 
     return {
         "source_root": str(data_root),
@@ -362,8 +393,21 @@ def _source_metadata(
         "codes": list(dict.fromkeys(str(code) for code in source_config.get("codes", ()))),
         "universe_indices": sorted(str(code) for code in universe_indices),
         "filters": filters,
-        "forecast_year_offset": forecast_year_offset,
+        "forecast_year_offsets": forecast_year_offsets,
     }
+
+
+def _configured_forecast_offsets(
+    source_config: Mapping[str, Any],
+) -> list[int] | None:
+    """把新旧一致预期配置统一为缓存使用的期限列表。"""
+    forecast_year_offsets = source_config.get("forecast_year_offsets")
+    if forecast_year_offsets is not None:
+        return [int(offset) for offset in forecast_year_offsets]
+    forecast_year_offset = source_config.get("forecast_year_offset")
+    if forecast_year_offset is not None:
+        return [int(forecast_year_offset)]
+    return None
 
 
 def _prepare_source_cache(
@@ -380,7 +424,7 @@ def _prepare_source_cache(
     semantic_conflicts = [
         key
         for key in SEMANTIC_METADATA_KEYS
-        if cached_metadata[key] != requested_metadata[key]
+        if cached_metadata.get(key) != requested_metadata[key]
     ]
     if semantic_conflicts:
         if refresh:
@@ -409,9 +453,20 @@ def _prepare_source_cache(
             )
         )
 
+    cached_offsets = _configured_forecast_offsets(cached_metadata)
+    requested_offsets = _configured_forecast_offsets(requested_metadata)
+    if requested_offsets is not None:
+        build_metadata["forecast_year_offsets"] = list(
+            dict.fromkeys([*(cached_offsets or []), *requested_offsets])
+        )
+
     needs_expansion = any(
         build_metadata[key] != cached_metadata[key]
         for key in ("start_date", "end_date", "fields", "codes")
+    )
+    needs_expansion |= (
+        requested_offsets is not None
+        and build_metadata["forecast_year_offsets"] != cached_offsets
     )
     rebuild = refresh or needs_expansion
     if rebuild:
@@ -429,6 +484,10 @@ def _build_source_config(
     build_config["fields"] = build_metadata["fields"]
     if build_metadata["codes"]:
         build_config["codes"] = build_metadata["codes"]
+    forecast_year_offsets = build_metadata.get("forecast_year_offsets")
+    if forecast_year_offsets is not None:
+        build_config.pop("forecast_year_offset", None)
+        build_config["forecast_year_offsets"] = forecast_year_offsets
     return build_config
 
 
@@ -654,4 +713,21 @@ def _slice_source_panel(
         column_mask &= source_panel.columns.get_level_values("asset_code").isin(
             requested_codes
         )
-    return source_panel.loc[trading_calendar, column_mask]
+    sliced_panel = source_panel.loc[trading_calendar, column_mask]
+    if "forecast_year_offsets" in source_config:
+        requested_offsets = source_config["forecast_year_offsets"]
+        offset_mask = sliced_panel.columns.get_level_values(
+            "forecast_year_offset"
+        ).isin(requested_offsets)
+        return sliced_panel.loc[:, offset_mask]
+    if (
+        "forecast_year_offset" in source_config
+        and "forecast_year_offset" in sliced_panel.columns.names
+    ):
+        return sliced_panel.xs(
+            int(source_config["forecast_year_offset"]),
+            axis=1,
+            level="forecast_year_offset",
+            drop_level=True,
+        )
+    return sliced_panel
