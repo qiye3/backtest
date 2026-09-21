@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -13,6 +14,7 @@ from src.plotter.evaluation import (
     _shared_mean_group_sizes,
     plot_evaluation,
 )
+from src.plotter.style import style_date_axis
 
 
 class EvaluationPlotTest(unittest.TestCase):
@@ -116,6 +118,28 @@ class EvaluationPlotTest(unittest.TestCase):
                 Path("evaluation"),
             )
         self.assertEqual(table.call_count, 1)
+
+    def test_date_axis_uses_denser_full_date_ticks(self) -> None:
+        """时间轴应允许更多完整日期刻度，并轻微旋转避免重叠。"""
+        figure, axis = plt.subplots()
+        axis.plot(
+            pd.date_range("2024-01-01", "2026-01-01", freq="MS"),
+            range(25),
+        )
+        style_date_axis(axis)
+
+        locator = axis.xaxis.get_major_locator()
+        formatter = axis.xaxis.get_major_formatter()
+        self.assertIsInstance(locator, mdates.AutoDateLocator)
+        self.assertEqual(locator.minticks, 6)
+        self.assertTrue(
+            all(max_ticks == 10 for max_ticks in locator.maxticks.values())
+        )
+        self.assertEqual(formatter.fmt, "%Y-%m-%d")
+        self.assertTrue(
+            all(label.get_rotation() == 20 for label in axis.get_xticklabels())
+        )
+        plt.close(figure)
 
 
 if __name__ == "__main__":

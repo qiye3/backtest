@@ -440,9 +440,7 @@ def _publish_strategy_figure_stage(
 ) -> None:
     """原子发布一个已完成策略阶段对应的全部调仓周期图。"""
     for strategy_name in strategy_names:
-        figure_directory = (
-            cache_root / "strategies" / strategy_name / "figures"
-        )
+        figure_directory = cache_root / strategy_name / "figures"
         for output_format in config.raw["plots"]["formats"]:
             pattern = f"{figure_prefix}*.{output_format}"
             for source_path in sorted(figure_directory.glob(pattern)):
@@ -642,7 +640,7 @@ def _calculate_strategy_backtest_checkpoints(
         checkpoint_paths.update(
             save_backtest_checkpoints(
                 {strategy_name: backtest_result},
-                cache_root / "strategies",
+                cache_root,
                 mode,
             )
         )
@@ -835,7 +833,7 @@ def _plot_strategy_deviation_result(
 ) -> None:
     """绘制一个策略全部调仓周期的目标权重偏离图。"""
     strategy_name = strategy_result["strategy_name"]
-    figure_directory = cache_root / "strategies" / strategy_name / "figures"
+    figure_directory = cache_root / strategy_name / "figures"
     for interval, target_weights in strategy_result["periods"].items():
         interval_label = _strategy_interval_label(
             strategy_result["rebalance_frequency"],
@@ -861,7 +859,7 @@ def _plot_strategy_backtest_result(
     cache_root: Path,
 ) -> None:
     """绘制一个策略当前回测模式下的全部调仓周期图。"""
-    figure_directory = cache_root / "strategies" / strategy_name / "figures"
+    figure_directory = cache_root / strategy_name / "figures"
     for interval in target_result["periods"]:
         interval_label = _strategy_interval_label(
             target_result["rebalance_frequency"],
@@ -889,12 +887,12 @@ def _load_strategy_backtest_for_plot(
     if config.raw["run"][f"strategy_{mode}_backtest"]:
         return load_backtest_checkpoint(
             strategy_name,
-            result_source / "strategies",
+            result_source,
             mode,
         )
     return load_backtest_result(
         strategy_name,
-        result_source / "strategies",
+        result_source,
         mode,
     )
 
@@ -1095,12 +1093,12 @@ def _prepare_retained_checkpoints(
         for strategy_name in strategy_names:
             result = load_backtest_checkpoint(
                 strategy_name,
-                cache_root / "strategies",
+                cache_root,
                 mode,
             )
             save_backtest_results(
                 {strategy_name: result},
-                retained_root / "strategies",
+                retained_root,
                 mode,
                 save_details=config.raw["output"]["save_backtest_details"],
             )
@@ -1187,14 +1185,8 @@ def _publish_successful_run(
         if config.raw["output"]["save_parquet"]["strategy_weights"]:
             output_paths["strategies"] = tuple(
                 _publish_file(
-                    cache_root
-                    / "strategies"
-                    / strategy_name
-                    / TARGET_FILE_NAME,
-                    config.output_root
-                    / "strategies"
-                    / strategy_name
-                    / TARGET_FILE_NAME,
+                    cache_root / strategy_name / TARGET_FILE_NAME,
+                    config.output_root / strategy_name / TARGET_FILE_NAME,
                 )
                 for strategy_name in strategy_names
             )
@@ -1202,7 +1194,6 @@ def _publish_successful_run(
             for strategy_name in strategy_names:
                 target_path = (
                     config.output_root
-                    / "strategies"
                     / strategy_name
                     / TARGET_FILE_NAME
                 )
@@ -1217,7 +1208,6 @@ def _publish_successful_run(
             for strategy_name in strategy_names:
                 result_path = (
                     config.output_root
-                    / "strategies"
                     / strategy_name
                     / file_name
                 )
@@ -1225,11 +1215,8 @@ def _publish_successful_run(
             continue
         output_paths[stage_name] = tuple(
             _publish_file(
-                retained_root / "strategies" / strategy_name / file_name,
-                config.output_root
-                / "strategies"
-                / strategy_name
-                / file_name,
+                retained_root / strategy_name / file_name,
+                config.output_root / strategy_name / file_name,
             )
             for strategy_name in strategy_names
         )

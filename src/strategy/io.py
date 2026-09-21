@@ -32,9 +32,7 @@ def save_strategy_targets(
     stored_targets = pd.concat(target_frames, ignore_index=True)
     stored_targets.insert(0, "benchmark_index", result["benchmark_index"])
     stored_targets.insert(0, "factor_name", result["factor_name"])
-    strategy_directory = (
-        Path(output_root) / "strategies" / result["strategy_name"]
-    )
+    strategy_directory = Path(output_root) / result["strategy_name"]
     strategy_directory.mkdir(parents=True, exist_ok=True)
     output_path = strategy_directory / TARGET_FILE_NAME
     stored_targets.to_parquet(output_path, index=False)
@@ -46,9 +44,7 @@ def load_strategy_targets(
     output_root: str | Path,
 ) -> dict[str, Any]:
     """从稀疏长表恢复一个策略的各调仓周期目标权重。"""
-    target_path = (
-        Path(output_root) / "strategies" / strategy_name / TARGET_FILE_NAME
-    )
+    target_path = Path(output_root) / strategy_name / TARGET_FILE_NAME
     stored_targets = pd.read_parquet(target_path)
     periods = {}
     for interval, interval_targets in stored_targets.groupby(
@@ -73,8 +69,9 @@ def load_strategy_targets(
 
 def find_strategy_names(output_root: str | Path) -> tuple[str, ...]:
     """列出已经保存目标权重的策略名称。"""
-    strategy_root = Path(output_root) / "strategies"
     return tuple(
         target_path.parent.name
-        for target_path in sorted(strategy_root.glob(f"*/{TARGET_FILE_NAME}"))
+        for target_path in sorted(
+            Path(output_root).glob(f"*/{TARGET_FILE_NAME}")
+        )
     )
