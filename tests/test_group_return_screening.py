@@ -150,6 +150,7 @@ class FactorScreeningSummaryTests(unittest.TestCase):
                 "total_return": [0.1, 0.2],
                 "annual_return": [0.2, 0.3],
                 "sharpe": [1.0, 2.0],
+                "mean_turnover": [0.3, 0.4],
                 "annual_turnover": [3.0, 4.0],
                 "benchmark_total_return": [0.05, 0.05],
                 "excess_total_return": [0.05, 0.15],
@@ -168,6 +169,7 @@ class FactorScreeningSummaryTests(unittest.TestCase):
         self.assertEqual(weekly_summary.at[0, "rank_ic_mean_1w"], 1.0)
         self.assertEqual(weekly_summary.at[0, "rank_ic_mean_2w"], 2.0)
         self.assertEqual(weekly_summary.at[0, "total_return_1w"], 0.2)
+        self.assertEqual(weekly_summary.at[0, "mean_turnover_1w"], 0.4)
         self.assertNotIn("mode", weekly_summary.columns)
 
 

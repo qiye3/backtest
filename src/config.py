@@ -64,6 +64,7 @@ PLOT_METRICS = {
     "excess_total_return",
     "tracking_error",
     "information_ratio",
+    "mean_turnover",
 }
 DEFAULT_QUANTILE_EDGES = [
     [0.0, 0.01],
@@ -111,6 +112,7 @@ DEFAULT_METRIC_COLUMNS = [
     "annual_volatility",
     "sharpe",
     "max_drawdown",
+    "mean_turnover",
     "annual_turnover",
 ]
 DEFAULT_PARQUET_RETENTION = {

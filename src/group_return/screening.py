@@ -46,6 +46,7 @@ BACKTEST_METRIC_COLUMNS = [
     "total_return",
     "annual_return",
     "sharpe",
+    "mean_turnover",
     "turnover",
     "benchmark_total_return",
     "excess_total_return",

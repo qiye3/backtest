@@ -360,6 +360,7 @@ def _draw_metrics_table(
             "Strategy",
             [
                 ("Annual return", "annual_return"),
+                ("Gross annual return", "gross_annual_return"),
                 ("Annual volatility", "annual_volatility"),
                 ("Sharpe", "sharpe"),
                 ("Max drawdown", "max_drawdown"),
@@ -370,6 +371,7 @@ def _draw_metrics_table(
             [
                 ("Gross total", "gross_total_return"),
                 ("Net total", "total_return"),
+                ("Mean turnover", "mean_turnover"),
                 ("Annual turnover", "annual_turnover"),
                 ("Total cost rate", "total_cost_rate"),
             ],
@@ -381,11 +383,13 @@ def _draw_metrics_table(
                 ("Excess return", "excess_total_return"),
                 ("Tracking error", "tracking_error"),
                 ("Information ratio", "information_ratio"),
+                ("Observations", "risk_periods"),
             ],
         ),
     ]
     percent_metrics = {
         "annual_return",
+        "gross_annual_return",
         "annual_volatility",
         "max_drawdown",
         "gross_total_return",
@@ -394,6 +398,7 @@ def _draw_metrics_table(
         "benchmark_total_return",
         "excess_total_return",
         "tracking_error",
+        "mean_turnover",
     }
     axis.axis("off")
     for block_position, (block_name, block_metrics) in enumerate(metric_blocks):
@@ -445,6 +450,8 @@ def _format_metric(
         return f"{value:.1%}"
     if metric_name == "annual_turnover":
         return f"{value:.2f}x"
+    if metric_name == "risk_periods":
+        return f"{int(value)}"
     return f"{value:.2f}"
 
 

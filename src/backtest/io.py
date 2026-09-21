@@ -38,6 +38,7 @@ def build_metrics_summary(
                 "total_return",
                 "annual_return",
                 "sharpe",
+                "mean_turnover",
                 "annual_turnover",
                 "benchmark_total_return",
                 "excess_total_return",

@@ -21,6 +21,8 @@ from src.cli import (
 )
 from src.config import load_config
 from src.data.market_data import MarketData
+from src.plotter.backtest import _format_metric as format_factor_metric
+from src.plotter.strategy import _format_metric as format_strategy_metric
 from src.plotter.strategy import plot_strategy_backtest, plot_weight_deviation
 from src.strategy.config import load_strategy
 from src.strategy.evaluation import calculate_weight_deviation
@@ -82,6 +84,20 @@ class StrategyTests(unittest.TestCase):
             )
             strategy = load_strategy(config_path)
         self.assertIsInstance(strategy, CniGrowth100Portfolio)
+
+    def test_turnover_metrics_use_percentage_and_multiple_formats(self) -> None:
+        """平均换手显示百分数，年化换手显示年度倍数。"""
+        self.assertEqual(format_factor_metric("mean_turnover", 0.325), "32.5%")
+        self.assertEqual(format_factor_metric("annual_turnover", 3.2), "3.20x")
+        percent_metrics = {"mean_turnover"}
+        self.assertEqual(
+            format_strategy_metric(0.325, "mean_turnover", percent_metrics),
+            "32.5%",
+        )
+        self.assertEqual(
+            format_strategy_metric(3.2, "annual_turnover", percent_metrics),
+            "3.20x",
+        )
 
     def test_strategy_only_config_plots_distribution_without_sampling(
         self,

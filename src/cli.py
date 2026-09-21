@@ -969,6 +969,7 @@ def _strategy_metric_columns(
         "annual_return",
         "sharpe",
         "max_drawdown",
+        "mean_turnover",
         "annual_turnover",
         "benchmark_total_return",
         "excess_total_return",

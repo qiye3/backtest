@@ -25,6 +25,7 @@ _METRIC_LABELS = {
     "annual_volatility": "Annual volatility",
     "sharpe": "Sharpe",
     "max_drawdown": "Max drawdown",
+    "mean_turnover": "Mean turnover",
     "annual_turnover": "Annual turnover",
     "annual_cost_rate": "Annual cost rate",
     "total_cost_rate": "Total cost rate",
@@ -46,6 +47,7 @@ _PERCENT_METRICS = {
     "benchmark_total_return",
     "excess_total_return",
     "tracking_error",
+    "mean_turnover",
 }
 
 
