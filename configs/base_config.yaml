@@ -204,3 +204,10 @@ metrics:
   # simple 使用线性年化，account 使用几何复利年化。
   simple_annual_return: linear
   account_annual_return: compound
+
+plots:
+  distribution:
+    # 单因子最多展示 10 万个样本，使用更细的柱宽观察集中区间和长尾。
+    bins: 300
+    # 总体 IC 和多空收益分布
+    overall_bins: 50

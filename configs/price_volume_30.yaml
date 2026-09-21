@@ -1,0 +1,149 @@
+# 独立运行 30 个价量因子；不改变 base_config.yaml 的默认批次。
+run:
+  factors: true
+  group_return: true
+  simple_backtest: true
+  account_backtest: true
+  plotter: true
+  overall_evaluation: true
+  max_workers: 4
+  refresh_market_data: true
+
+factors:
+  config_directory: ../factors/price_volume_factors/config
+
+output:
+  root: ../outputs_wind
+  save_parquet:
+    factor: true
+    group_return: false
+    simple_backtest: false
+    account_backtest: false
+  save_backtest_details: false
+
+market_data:
+  source_root: /Users/qiye/Desktop/wind_cache/formal_factor_backtest
+  cache_root: ../data/wind_formal
+  # 最长因子使用 120 个交易日，需在 2024-02-01 回测前保留充足预热期。
+  start_date: "2023-01-03"
+  end_date: "2026-09-09"
+  benchmark_index: 000906.SH
+  universe_indices:
+    - 000906.SH
+    - 000852.SH
+  sources:
+    index_price:
+      codes:
+        - 000906.SH
+      fields:
+        - S_DQ_CLOSE
+    stock_quote:
+      fields:
+        - S_DQ_ADJCLOSE
+        - S_DQ_VOLUME
+        - S_DQ_AMOUNT
+
+group_return:
+  start: "2024-02-01"
+  end: "2026-09-09"
+  universe_indices:
+    - 000906.SH
+    - 000852.SH
+  sampling:
+    weekday: FRI
+    every_n_weeks: 1
+    anchor_date: "2024-01-05"
+    holiday_policy: previous_trading_day
+  reference_price: close
+  target:
+    type: benchmark_excess_return
+    benchmark_source: index_price
+  future_return_weeks:
+    - 1
+    - 2
+    - 4
+    - 8
+  group_return_agg: mean
+  time_return_agg: mean
+  empty_group_policy: nan
+  insufficient_stocks_policy: nan
+  missing_price_policy: previous_close
+  max_stale_days: null
+
+simple_backtest:
+  start: "2024-02-01"
+  end: "2026-09-09"
+  universe_indices:
+    - 000906.SH
+    - 000852.SH
+  rebalance:
+    frequency: weekly
+    intervals:
+      - 1
+      - 2
+      - 4
+    weekday: FRI
+    anchor_date: "2024-02-02"
+    holiday_policy: previous_trading_day
+  trade_price: close
+  benchmark:
+    source: index_price
+  initial_entry: first_rebalance
+  initial_capital: 1.0
+  transaction_cost_rate: 0.001
+  charge_initial_cost: true
+  liquidate_at_end: false
+  empty_group_policy: cash
+  insufficient_stocks_policy: error
+  missing_price_policy: previous_close
+  max_stale_days: null
+  curve_frequency: both
+  execution:
+    policy: ideal
+
+account_backtest:
+  start: "2024-02-01"
+  end: "2026-09-09"
+  universe_indices:
+    - 000906.SH
+    - 000852.SH
+  rebalance:
+    frequency: weekly
+    intervals:
+      - 1
+      - 2
+      - 4
+    weekday: FRI
+    anchor_date: "2024-02-02"
+    holiday_policy: previous_trading_day
+  trade_price: close
+  benchmark:
+    source: index_price
+  initial_entry: first_rebalance
+  initial_capital: 1000000
+  transaction_cost_rate: 0.001
+  charge_initial_cost: true
+  liquidate_at_end: false
+  empty_group_policy: cash
+  insufficient_stocks_policy: error
+  missing_price_policy: previous_close
+  max_stale_days: null
+  curve_frequency: both
+  execution:
+    policy: ideal
+
+metrics:
+  risk_free_rate: 0.0
+  return_frequency: daily
+  annual_trading_days: 252
+  annual_weeks: 52
+  include_initial_turnover: true
+  simple_annual_return: linear
+  account_annual_return: compound
+
+plots:
+  distribution:
+    # 单因子最多展示 10 万个样本，使用更细的柱宽观察集中区间和长尾。
+    bins: 300
+    # 总体 IC 和多空收益分布每个周期只有 30 个因子，单独控制柱数。
+    overall_bins: 50

@@ -1,0 +1,232 @@
+run:
+  factors: true
+  group_return: true
+  simple_backtest: false
+  account_backtest: false
+  plotter: true
+  max_workers: 4
+  refresh_market_data: false
+  strategies: false
+  strategy_simple_backtest: false
+  strategy_account_backtest: false
+  overall_evaluation: true
+factors:
+  config_directory: config
+output:
+  root: ../../outputs_quality
+  save_backtest_details: false
+market_data:
+  source_root: /replace/with/factor/data/root
+  cache_root: ../../data/quality_factors
+  start_date: '2009-01-05'
+  end_date: '2026-08-25'
+  benchmark_index: 000906.SH
+  universe_indices:
+  - 000906.SH
+  - 000852.SH
+  sources:
+    index_price:
+      codes:
+      - 000906.SH
+      fields:
+      - S_DQ_CLOSE
+    stock_quote:
+      fields:
+      - S_DQ_ADJCLOSE
+    stock_valuation:
+      fields:
+      - S_VAL_MV
+      - S_VAL_PB_NEW
+    financial_income:
+      fields:
+      - TOT_OPER_REV
+      - NET_PROFIT_EXCL_MIN_INT_INC
+    financial_balance_sheet:
+      fields:
+      - ACCOUNTS_RECEIVABLE
+      - GOODWILL
+      - INVENTORIES
+      - TOT_ASSETS
+      - TOT_SHRHLDR_EQY_EXCL_MIN_INT
+    financial_cashflow:
+      fields:
+      - CASH_PAY_ACQ_CONST_FIOLTA
+      - NET_CASH_FLOWS_OPER_ACT
+    financial_indicators:
+      fields:
+      - S_FA_ASSETSTOEQUITY
+      - S_FA_ASSETSTURN
+      - S_FA_CURRENT
+      - S_FA_DEBTTOASSETS
+      - S_FA_DEDUCTEDPROFITTOPROFIT
+      - S_FA_FCFF
+      - S_FA_GROSSPROFITMARGIN
+      - S_FA_NETDEBT
+      - S_FA_NETPROFITMARGIN
+      - S_FA_OCFTOOR
+      - S_FA_OCFTOPROFIT
+      - S_FA_OPTOGR
+      - S_FA_QUICK
+      - S_FA_ROA
+      - S_FA_ROE
+      - S_FA_ROE_DEDUCTED
+      - S_FA_ROIC
+      - S_FA_SALESCASHINTOOR
+      - S_FA_TANGIBLEASSETSTOASSETS
+      - S_QFA_ROE
+    consensus_suntime:
+      forecast_year_offset: 0
+      fields:
+      - con_npgrate_13w
+      - con_roe
+    consensus_wind:
+      forecast_year_offset: 0
+      fields:
+      - prediction_number
+    industry_history:
+      fields:
+      - ind_class_code
+      filters:
+        industry_class_code: CITICS
+group_return:
+  start: '2014-01-03'
+  end: '2026-08-25'
+  universe_indices:
+  - 000906.SH
+  - 000852.SH
+  sampling:
+    weekday: FRI
+    every_n_weeks: 1
+    anchor_date: '2014-01-03'
+    holiday_policy: previous_trading_day
+  reference_price: close
+  future_return_weeks:
+  - 1
+  - 2
+  - 4
+  - 8
+  group_return_agg: mean
+  time_return_agg: mean
+  empty_group_policy: nan
+  insufficient_stocks_policy: nan
+  missing_price_policy: previous_close
+  max_stale_days: null
+  grouping:
+    quantile_edges:
+    - - 0.0
+      - 0.01
+    - - 0.0
+      - 0.1
+    - - 0.1
+      - 0.2
+    - - 0.2
+      - 0.3
+    - - 0.3
+      - 0.4
+    - - 0.4
+      - 0.5
+    - - 0.5
+      - 0.6
+    - - 0.6
+      - 0.7
+    - - 0.7
+      - 0.8
+    - - 0.8
+      - 0.9
+    - - 0.9
+      - 1.0
+    - - 0.99
+      - 1.0
+    group_aliases:
+    - G0.1
+    - G1
+    - G2
+    - G3
+    - G4
+    - G5
+    - G6
+    - G7
+    - G8
+    - G9
+    - G10
+    - G9.9
+  target:
+    type: factor_variant_excess_return
+    benchmark_source: index_price
+    industry_neutral_suffix: __industry_neutral
+    industry_source: industry_history
+    industry_field: ind_class_code
+simple_backtest:
+  start: '2014-01-03'
+  end: '2026-08-25'
+  universe_indices:
+  - 000906.SH
+  - 000852.SH
+  rebalance:
+    frequency: weekly
+    intervals:
+    - 1
+    - 4
+    weekday: FRI
+    anchor_date: '2014-01-03'
+    holiday_policy: previous_trading_day
+  trade_price: close
+  benchmark:
+    source: index_price
+  initial_entry: first_rebalance
+  initial_capital: 1.0
+  transaction_cost_rate: 0.001
+  charge_initial_cost: true
+  liquidate_at_end: false
+  empty_group_policy: cash
+  insufficient_stocks_policy: cash
+  missing_price_policy: previous_close
+  max_stale_days: null
+  curve_frequency: both
+  execution:
+    policy: ideal
+account_backtest:
+  start: '2014-01-03'
+  end: '2026-08-25'
+  universe_indices:
+  - 000906.SH
+  - 000852.SH
+  rebalance:
+    frequency: weekly
+    intervals:
+    - 1
+    - 4
+    weekday: FRI
+    anchor_date: '2014-01-03'
+    holiday_policy: previous_trading_day
+  trade_price: close
+  benchmark:
+    source: index_price
+  initial_entry: first_rebalance
+  initial_capital: 1000000
+  transaction_cost_rate: 0.001
+  charge_initial_cost: true
+  liquidate_at_end: false
+  empty_group_policy: cash
+  insufficient_stocks_policy: error
+  missing_price_policy: previous_close
+  max_stale_days: null
+  curve_frequency: both
+  execution:
+    policy: ideal
+metrics:
+  risk_free_rate: 0.0
+  return_frequency: daily
+  annual_trading_days: 252
+  annual_weeks: 52
+  include_initial_turnover: true
+  simple_annual_return: linear
+  account_annual_return: compound
+plots:
+  distribution:
+    bins: 300
+    overall_bins: 50
+  simple:
+    enabled: false
+  account:
+    enabled: false

@@ -170,7 +170,8 @@ CONFIG_DEFAULTS = {
         "legend_columns": 4,
         "distribution": {
             "enabled": True,
-            "bins": 60,
+            "bins": 300,
+            "overall_bins": 50,
             "density": True,
             "kde": True,
             "clip_quantiles": None,
@@ -805,11 +806,23 @@ def _validate_plots(settings: Mapping[str, Any]) -> None:
 
 def _validate_distribution_plot(settings: Mapping[str, Any]) -> None:
     """校验因子分布图设置。"""
-    fields = {"enabled", "bins", "density", "kde", "clip_quantiles", "max_points"}
+    fields = {
+        "enabled",
+        "bins",
+        "overall_bins",
+        "density",
+        "kde",
+        "clip_quantiles",
+        "max_points",
+    }
     _plot_keys(settings, fields, "distribution")
     if not settings["enabled"]:
         return
     _positive_integer(settings["bins"], "plots.distribution.bins")
+    _positive_integer(
+        settings["overall_bins"],
+        "plots.distribution.overall_bins",
+    )
     _positive_integer(settings["max_points"], "plots.distribution.max_points")
     _boolean(settings["density"], "plots.distribution.density")
     _boolean(settings["kde"], "plots.distribution.kde")
