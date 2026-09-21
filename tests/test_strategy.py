@@ -14,6 +14,8 @@ import yaml
 from src.backtest import engine as backtest_engine
 from src.backtest import iter_weight_backtests, run_weight_backtests
 from src.backtest.targets import rebalance_dates
+from src.cli import _plot_factor_checkpoints, _remaining_factor_plot_names
+from src.config import load_config
 from src.data.market_data import MarketData
 from src.plotter.strategy import plot_strategy_backtest, plot_weight_deviation
 from src.strategy.config import load_strategy
@@ -76,6 +78,50 @@ class StrategyTests(unittest.TestCase):
             )
             strategy = load_strategy(config_path)
         self.assertIsInstance(strategy, CniGrowth100Portfolio)
+
+    def test_strategy_only_config_plots_distribution_without_sampling(
+        self,
+    ) -> None:
+        """策略评分分布不应依赖未启用的分组评价抽样配置。"""
+        config = load_config(
+            Path("strategies/yfd_growth100_factors/run.yaml")
+        )
+        plot_names = _remaining_factor_plot_names(
+            config.raw["run"],
+            config.raw["plots"],
+        )
+        factor_panel = pd.DataFrame(
+            [[1.0]],
+            index=pd.DatetimeIndex(["2024-02-08"], name="date"),
+            columns=pd.Index(["000001.SZ"], name="asset_code"),
+        )
+
+        with (
+            TemporaryDirectory() as temporary_directory,
+            patch(
+                "src.cli.load_factor_panel",
+                return_value=factor_panel,
+            ),
+            patch("src.cli.plot_factor") as plot_factor,
+        ):
+            temporary_root = Path(temporary_directory)
+            _plot_factor_checkpoints(
+                config=config,
+                factor_names=["growth_score"],
+                factor_source=temporary_root,
+                group_return_source=temporary_root,
+                backtest_sources={
+                    "simple": temporary_root,
+                    "account": temporary_root,
+                },
+                cache_root=temporary_root,
+                plot_names=plot_names,
+            )
+
+        self.assertEqual(plot_names, {"distribution"})
+        self.assertIsNone(
+            plot_factor.call_args.kwargs["evaluation_settings"]
+        )
 
     def test_growth100_portfolio_limits_replacements_and_caps_weights(
         self,

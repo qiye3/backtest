@@ -274,7 +274,10 @@ def _run_pipeline(config: RunConfig, progress: _CliProgress) -> RunSummary:
 
     if run_settings["plotter"]:
         progress.start("plotter")
-        remaining_factor_plots = _remaining_factor_plot_names(run_settings)
+        remaining_factor_plots = _remaining_factor_plot_names(
+            run_settings,
+            config.raw["plots"],
+        )
         if remaining_factor_plots:
             _plot_factor_checkpoints(
                 config,
@@ -350,8 +353,9 @@ def _load_factor_items(
 
 def _remaining_factor_plot_names(
     run_settings: Mapping[str, Any],
+    plot_settings: Mapping[str, Any],
 ) -> set[str]:
-    """列出没有随本次计算阶段生成、需要从既有结果补画的因子图。"""
+    """列出已启用且没有随计算阶段生成、需要补画的因子图。"""
     plot_names = set()
     if not run_settings["group_return"]:
         plot_names.update({"distribution", "evaluation"})
@@ -359,7 +363,11 @@ def _remaining_factor_plot_names(
         plot_names.add("simple")
     if not run_settings["account_backtest"]:
         plot_names.add("account")
-    return plot_names
+    return {
+        plot_name
+        for plot_name in plot_names
+        if plot_settings[plot_name]["enabled"]
+    }
 
 
 def _remaining_strategy_plot_names(
@@ -760,7 +768,11 @@ def _plot_factor_checkpoints(
                 if "account" in requested_plots
                 else None
             ),
-            evaluation_settings=_evaluation_plot_settings(config),
+            evaluation_settings=(
+                _evaluation_plot_settings(config)
+                if "sampling" in config.raw["group_return"]
+                else None
+            ),
             backtest_settings=_backtest_plot_settings(config),
             plot_names=requested_plots,
         )
