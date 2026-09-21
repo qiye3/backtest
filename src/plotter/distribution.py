@@ -22,7 +22,72 @@ def plot_distribution(
     sampling_settings: Mapping[str, Any] | None = None,
 ) -> list[Path]:
     """绘制有限因子值分布；裁剪和抽样只影响展示。"""
-    plot_settings = settings["distribution"]
+    figure, axis = plt.subplots(
+        figsize=(settings["width"], settings["row_height"] * 1.5),
+        layout="constrained",
+    )
+    distribution_summary = plot_distribution_axis(
+        axis,
+        factor_name,
+        factor_panel,
+        settings["distribution"],
+    )
+    distribution_statistics = distribution_summary["statistics"]
+
+    set_figure_title(
+        figure,
+        f"{factor_name} | Factor distribution",
+        settings,
+        annotation=(
+            distribution_sampling_label(sampling_settings)
+            if sampling_settings is not None
+            else None
+        ),
+    )
+    axis.set_xlabel("Factor value")
+    axis.set_ylabel(
+        "Density" if settings["distribution"]["density"] else "Count"
+    )
+    clipping_note = (
+        " | display clipping enabled"
+        if distribution_summary["clipping_enabled"]
+        else ""
+    )
+    axis.set_title(
+        f"{distribution_summary['total_count']:,} finite observations; "
+        f"{distribution_summary['displayed_count']:,} displayed"
+        f"{clipping_note}",
+        fontsize=10,
+    )
+    axis.text(
+        0.98,
+        0.95,
+        "\n".join(
+            f"{name}: {value:.6g}"
+            for name, value in distribution_statistics.items()
+        ),
+        transform=axis.transAxes,
+        horizontalalignment="right",
+        verticalalignment="top",
+        fontsize=9,
+        bbox={
+            "boxstyle": "round,pad=0.4",
+            "facecolor": "white",
+            "edgecolor": "#B0BEC5",
+            "alpha": 0.9,
+        },
+    )
+    axis.legend(loc="upper left", frameon=False)
+    return save_figure(figure, output_stem, settings)
+
+
+def plot_distribution_axis(
+    axis: plt.Axes,
+    factor_name: str,
+    factor_panel: pd.DataFrame,
+    plot_settings: Mapping[str, Any],
+) -> dict[str, Any]:
+    """在指定坐标轴绘制因子分布，并返回展示样本的统计信息。"""
     values = factor_panel.to_numpy(dtype=float).ravel()
     values = values[np.isfinite(values)]
     total_count = len(values)
@@ -50,10 +115,6 @@ def plot_distribution(
     }
     standard_deviation = float(value_series.std(ddof=0))
 
-    figure, axis = plt.subplots(
-        figsize=(settings["width"], settings["row_height"] * 1.5),
-        layout="constrained",
-    )
     _, bin_edges, _ = axis.hist(
         values,
         bins=plot_settings["bins"],
@@ -107,49 +168,16 @@ def plot_distribution(
             verticalalignment="top",
             fontsize=9,
         )
-
-    set_figure_title(
-        figure,
-        f"{factor_name} | Factor distribution",
-        settings,
-        annotation=(
-            _distribution_sampling_label(sampling_settings)
-            if sampling_settings is not None
-            else None
-        ),
-    )
-    axis.set_xlabel("Factor value")
-    axis.set_ylabel("Density" if plot_settings["density"] else "Count")
-    clipping_note = " | display clipping enabled" if clip_quantiles else ""
-    axis.set_title(
-        f"{total_count:,} finite observations; {len(values):,} displayed"
-        f"{clipping_note}",
-        fontsize=10,
-    )
-    axis.text(
-        0.98,
-        0.95,
-        "\n".join(
-            f"{name}: {value:.6g}"
-            for name, value in distribution_statistics.items()
-        ),
-        transform=axis.transAxes,
-        horizontalalignment="right",
-        verticalalignment="top",
-        fontsize=9,
-        bbox={
-            "boxstyle": "round,pad=0.4",
-            "facecolor": "white",
-            "edgecolor": "#B0BEC5",
-            "alpha": 0.9,
-        },
-    )
     style_axis(axis)
-    axis.legend(loc="upper left", frameon=False)
-    return save_figure(figure, output_stem, settings)
+    return {
+        "total_count": total_count,
+        "displayed_count": len(values),
+        "clipping_enabled": clip_quantiles is not None,
+        "statistics": distribution_statistics,
+    }
 
 
-def _distribution_sampling_label(settings: Mapping[str, Any]) -> str:
+def distribution_sampling_label(settings: Mapping[str, Any]) -> str:
     """格式化因子分布样本使用的周度截面抽样策略。"""
     sampling = settings["sampling"]
     return " | ".join(

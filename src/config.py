@@ -188,6 +188,10 @@ CONFIG_DEFAULTS = {
             "rank_ic_view": "monthly",
         },
         "overall": {
+            "factor_distribution_grid": {
+                "enabled": False,
+                "columns": 5,
+            },
             "group_return_grid": {
                 "enabled": False,
                 "columns": 5,
@@ -882,13 +886,25 @@ def _validate_evaluation_plot(settings: Mapping[str, Any]) -> None:
 
 
 def _validate_overall_plot(settings: Mapping[str, Any]) -> None:
-    """校验跨因子四周分组收益汇总图设置。"""
+    """校验跨因子分布与四周分组收益汇总图设置。"""
     _check_keys(
         settings,
-        {"group_return_grid"},
-        {"group_return_grid"},
+        {"factor_distribution_grid", "group_return_grid"},
+        {"factor_distribution_grid", "group_return_grid"},
         "plots.overall",
     )
+    distribution_grid_settings = settings["factor_distribution_grid"]
+    _plot_keys(
+        distribution_grid_settings,
+        {"enabled", "columns"},
+        "overall.factor_distribution_grid",
+    )
+    if distribution_grid_settings["enabled"]:
+        _positive_integer(
+            distribution_grid_settings["columns"],
+            "plots.overall.factor_distribution_grid.columns",
+        )
+
     grid_settings = settings["group_return_grid"]
     _plot_keys(
         grid_settings,

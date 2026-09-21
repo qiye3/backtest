@@ -1054,6 +1054,8 @@ def _run_overall_evaluation(
         settings=config.raw["plots"],
         output_directory=cache_root / "00_overall",
         evaluation_results=evaluation_results,
+        factor_panels=factor_panels,
+        evaluation_settings=config.raw["group_return"],
     )
 
 

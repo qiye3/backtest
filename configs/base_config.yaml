@@ -207,6 +207,11 @@ metrics:
 
 plots:
   overall:
+    factor_distribution_grid:
+      # 是否在 00_overall 输出所有因子的分布对比大图。
+      enabled: true
+      # 大图每行的因子子图数量。
+      columns: 5
     group_return_grid:
       # 是否在 00_overall 输出所有因子的 4 周分组收益对比大图。
       enabled: true

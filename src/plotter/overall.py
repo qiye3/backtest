@@ -10,8 +10,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from src.plotter.distribution import (
+    distribution_sampling_label,
+    plot_distribution_axis,
+)
 from src.plotter.evaluation import plot_group_return_bars
-from src.plotter.style import group_colors, save_figure, style_axis
+from src.plotter.style import (
+    group_colors,
+    save_figure,
+    set_figure_title,
+    style_axis,
+)
 
 GROUP_RETURN_HORIZON_WEEKS = 4
 
@@ -21,6 +30,8 @@ def plot_overall_evaluation(
     settings: Mapping[str, Any],
     output_directory: str | Path,
     evaluation_results: Mapping[str, Mapping[str, Any]] | None = None,
+    factor_panels: Mapping[str, pd.DataFrame] | None = None,
+    evaluation_settings: Mapping[str, Any] | None = None,
 ) -> dict[str, list[Path]]:
     """把跨因子统计图写入结果根目录下的 overall 目录。"""
     output_directory = Path(output_directory)
@@ -64,7 +75,123 @@ def plot_overall_evaluation(
                 settings=settings,
                 output_stem=output_directory / "group_return_4week_grid",
             )
+        distribution_grid_settings = settings["overall"][
+            "factor_distribution_grid"
+        ]
+        if distribution_grid_settings["enabled"]:
+            output_paths[
+                "factor_distribution_grid"
+            ] = plot_factor_distribution_grid(
+                factor_panels=factor_panels,
+                evaluation_results=evaluation_results,
+                settings=settings,
+                sampling_settings=evaluation_settings,
+                output_stem=output_directory / "factor_distribution_grid",
+            )
         return output_paths
+
+
+def plot_factor_distribution_grid(
+    factor_panels: Mapping[str, pd.DataFrame] | None,
+    evaluation_results: Mapping[str, Mapping[str, Any]] | None,
+    settings: Mapping[str, Any],
+    sampling_settings: Mapping[str, Any] | None,
+    output_stem: Path,
+) -> list[Path]:
+    """将各因子在实际评价截面上的值分布汇集为一张大图。"""
+    if factor_panels is None or evaluation_results is None:
+        raise ValueError("因子分布汇总图需要 factor_panels 和 evaluation_results")
+
+    factor_names = list(factor_panels)
+    columns = min(
+        settings["overall"]["factor_distribution_grid"]["columns"],
+        len(factor_names),
+    )
+    rows = (len(factor_names) + columns - 1) // columns
+    figure, axes = plt.subplots(
+        rows,
+        columns,
+        figsize=(max(settings["width"], columns * 3.4), rows * 3.0 + 0.8),
+        squeeze=False,
+        layout="constrained",
+    )
+    set_figure_title(
+        figure,
+        "Factor Distributions",
+        settings,
+        annotation=(
+            distribution_sampling_label(sampling_settings)
+            if sampling_settings is not None
+            else None
+        ),
+    )
+
+    legend_handles = None
+    legend_labels = None
+    for position, factor_name in enumerate(factor_names):
+        axis = axes.flat[position]
+        sampled_panel = _sample_evaluation_factor_panel(
+            factor_panels[factor_name],
+            evaluation_results[factor_name],
+        )
+        distribution_summary = plot_distribution_axis(
+            axis,
+            factor_name,
+            sampled_panel,
+            settings["distribution"],
+        )
+        statistics = distribution_summary["statistics"]
+        axis.set_title(factor_name, fontsize=10)
+        axis.set_xlabel("Factor value")
+        if position % columns == 0:
+            axis.set_ylabel(
+                "Density"
+                if settings["distribution"]["density"]
+                else "Count"
+            )
+        axis.text(
+            0.98,
+            0.95,
+            (
+                f"N={distribution_summary['displayed_count']:,}\n"
+                f"mean={statistics['Mean']:.3g}\n"
+                f"median={statistics['Median']:.3g}"
+            ),
+            transform=axis.transAxes,
+            horizontalalignment="right",
+            verticalalignment="top",
+            fontsize=7,
+            bbox={
+                "facecolor": "white",
+                "edgecolor": "none",
+                "alpha": 0.75,
+            },
+        )
+        if legend_handles is None:
+            legend_handles, legend_labels = axis.get_legend_handles_labels()
+
+    for axis in axes.flat[len(factor_names) :]:
+        axis.set_visible(False)
+    figure.legend(
+        legend_handles,
+        legend_labels,
+        loc="outside lower center",
+        ncol=len(legend_labels),
+        frameon=False,
+        fontsize=8,
+    )
+    return save_figure(figure, output_stem, settings)
+
+
+def _sample_evaluation_factor_panel(
+    factor_panel: pd.DataFrame,
+    evaluation_result: Mapping[str, Any],
+) -> pd.DataFrame:
+    """按 evaluation 实际使用的因子来源日抽取分布样本。"""
+    factor_dates = pd.DatetimeIndex(
+        evaluation_result["detail"]["factor_date"]
+    ).unique().rename(factor_panel.index.name)
+    return factor_panel.reindex(factor_dates.sort_values())
 
 
 def plot_group_return_grid(
