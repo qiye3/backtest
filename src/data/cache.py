@@ -43,11 +43,11 @@ def load_source_metadata(
     return json.loads(metadata_path.read_text(encoding="utf-8"))
 
 
-def load_source_panel(
+def load_source_data(
     cache_directory: Path,
     source_name: str,
 ) -> pd.DataFrame:
-    """在 metadata 已通过复用检查后读取来源 Parquet。"""
+    """在 metadata 已通过复用检查后读取来源面板或明细长表。"""
     cache_path = cache_directory / f"{source_name}.parquet"
     return pd.read_parquet(cache_path)
 
@@ -55,14 +55,14 @@ def load_source_panel(
 def save_source_cache(
     cache_directory: Path,
     source_name: str,
-    source_panel: pd.DataFrame,
+    source_data: pd.DataFrame,
     metadata: Mapping[str, Any],
 ) -> Path:
-    """覆盖保存单个来源的日频面板及其复用条件。"""
+    """覆盖保存单个来源的数据及其复用条件。"""
     cache_directory.mkdir(parents=True, exist_ok=True)
     cache_path = cache_directory / f"{source_name}.parquet"
     metadata_path = cache_directory / f"{source_name}.meta.json"
-    source_panel.to_parquet(cache_path)
+    source_data.to_parquet(cache_path)
     metadata_path.write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2),
         encoding="utf-8",

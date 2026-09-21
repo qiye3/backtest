@@ -21,6 +21,7 @@ SourceKind = Literal[
     "financial",
     "interval",
     "index_weight",
+    "records",
     "static",
 ]
 
@@ -43,6 +44,7 @@ class DataSourceSpec:
     - interval_start_column、interval_end_column：区间数据的起止字段。
     - forecast_period_column：一致预期数据用于选择预测年度的字段。
     - operation_time_column：同一业务键重复时用于识别最后入库版本的字段。
+    - effective_next_trading_day：公告数据是否从下一个交易日开始进入面板。
 
     输出：
     - 该类只保存不可变的数据源定义，不产生文件或 DataFrame。
@@ -66,6 +68,7 @@ class DataSourceSpec:
     forecast_period_column: str | None = None
     operation_time_column: str | None = "OPDATE"
     static_date_columns: tuple[str, ...] = ()
+    effective_next_trading_day: bool = False
 
 
 DATA_SOURCE_SPECS: dict[str, DataSourceSpec] = {
@@ -226,6 +229,180 @@ DATA_SOURCE_SPECS: dict[str, DataSourceSpec] = {
         date_column="TRADE_DT",
         asset_column="S_INFO_WINDCODE",
     ),
+    "dividend_wind": DataSourceSpec(
+        relative_directory="stock/actions/dividend_wind",
+        file_pattern="dividend_wind_*.csv",
+        kind="records",
+        date_column="ANN_DT",
+        asset_column="S_INFO_WINDCODE",
+        report_period_column="REPORT_PERIOD",
+    ),
+    "exright_dividend": DataSourceSpec(
+        relative_directory="stock/actions/exright_dividend",
+        file_pattern="exright_dividend_*.csv",
+        kind="daily",
+        date_column="ex_date",
+        asset_column="stock_code",
+        operation_time_column=None,
+    ),
+    "repo_summary": DataSourceSpec(
+        relative_directory="stock/actions/repo_summary",
+        file_pattern="repo_summary_*.csv",
+        kind="records",
+        date_column="ann_dt",
+        asset_column="stock_code",
+        operation_time_column=None,
+    ),
+    "repo_wind": DataSourceSpec(
+        relative_directory="stock/actions/repo_wind",
+        file_pattern="repo_wind_*.csv",
+        kind="records",
+        date_column="ANN_DT",
+        asset_column="S_INFO_WINDCODE",
+    ),
+    "actual_controller": DataSourceSpec(
+        relative_directory="stock/basics",
+        file_pattern="actual_controller.csv",
+        kind="records",
+        date_column="enddate",
+        asset_column="stock_code",
+        annual_files=False,
+        operation_time_column=None,
+    ),
+    "management_latest": DataSourceSpec(
+        relative_directory="stock/basics",
+        file_pattern="management_latest.csv",
+        kind="records",
+        date_column=None,
+        asset_column=None,
+        annual_files=False,
+        operation_time_column=None,
+    ),
+    "management_reward": DataSourceSpec(
+        relative_directory="stock/basics/management_reward",
+        file_pattern="management_reward_*.csv",
+        kind="records",
+        date_column=None,
+        asset_column="stock_code",
+        report_period_column="end_date",
+        operation_time_column=None,
+    ),
+    "financial_ttm": DataSourceSpec(
+        relative_directory="stock/financials/ttm_hist",
+        file_pattern="ttm_hist_*.csv",
+        kind="financial",
+        date_column="ANN_DT",
+        asset_column="STOCK_CODE",
+        report_period_column="REPORT_PERIOD",
+        effective_next_trading_day=True,
+    ),
+    "profit_express": DataSourceSpec(
+        relative_directory="stock/forecasts/profit_express",
+        file_pattern="profit_express_*.csv",
+        kind="financial",
+        date_column="ann_dt",
+        asset_column="stock_code",
+        report_period_column="report_period",
+        operation_time_column=None,
+        effective_next_trading_day=True,
+    ),
+    "profit_notice": DataSourceSpec(
+        relative_directory="stock/forecasts/profit_notice",
+        file_pattern="profit_notice_*.csv",
+        kind="financial",
+        date_column="s_profitnotice_date",
+        asset_column="stock_code",
+        report_period_column="s_profitnotice_period",
+        operation_time_column=None,
+        effective_next_trading_day=True,
+    ),
+    "customer": DataSourceSpec(
+        relative_directory="stock/notes/customer",
+        file_pattern="customer_*.csv",
+        kind="records",
+        date_column=None,
+        asset_column="stock_code",
+        report_period_column="report_period",
+        operation_time_column=None,
+    ),
+    "customer_summary": DataSourceSpec(
+        relative_directory="stock/notes/customer_summary",
+        file_pattern="customer_summary_*.csv",
+        kind="records",
+        date_column=None,
+        asset_column="stock_code",
+        report_period_column="report_period",
+        operation_time_column=None,
+    ),
+    "mb_consist": DataSourceSpec(
+        relative_directory="stock/notes/mb_consist",
+        file_pattern="mb_consist_*.csv",
+        kind="records",
+        date_column=None,
+        asset_column="stock_code",
+        report_period_column="report_period",
+        operation_time_column=None,
+    ),
+    "mb_product_rank": DataSourceSpec(
+        relative_directory="stock/notes/mb_product_rank",
+        file_pattern="mb_product_rank_*.csv",
+        kind="records",
+        date_column=None,
+        asset_column="stock_code",
+        report_period_column="report_period",
+        operation_time_column=None,
+    ),
+    "mb_region_rank": DataSourceSpec(
+        relative_directory="stock/notes/mb_region_rank",
+        file_pattern="mb_region_rank_*.csv",
+        kind="records",
+        date_column=None,
+        asset_column="stock_code",
+        report_period_column="report_period",
+        operation_time_column=None,
+    ),
+    "supplier": DataSourceSpec(
+        relative_directory="stock/notes/supplier",
+        file_pattern="supplier_*.csv",
+        kind="records",
+        date_column=None,
+        asset_column="stock_code",
+        report_period_column="report_period",
+        operation_time_column=None,
+    ),
+    "supplier_summary": DataSourceSpec(
+        relative_directory="stock/notes/supplier_summary",
+        file_pattern="supplier_summary_*.csv",
+        kind="records",
+        date_column=None,
+        asset_column="stock_code",
+        report_period_column="report_period",
+        operation_time_column=None,
+    ),
+    "major_holder_trade": DataSourceSpec(
+        relative_directory="stock/ownership/major_holder_trade",
+        file_pattern="major_holder_trade_*.csv",
+        kind="records",
+        date_column="ann_dt",
+        asset_column="stock_code",
+        operation_time_column=None,
+    ),
+    "pledge": DataSourceSpec(
+        relative_directory="stock/ownership/pledge",
+        file_pattern="pledge_*.csv",
+        kind="records",
+        date_column="s_enddate",
+        asset_column="stock_code",
+        operation_time_column=None,
+    ),
+    "ev_indicator": DataSourceSpec(
+        relative_directory="stock/valuation/ev_indicator",
+        file_pattern="ev_indicator_*.csv",
+        kind="daily",
+        date_column="trade_dt",
+        asset_column="stock_code",
+        operation_time_column=None,
+    ),
 }
 
 CSV_CHUNK_ROWS = 500_000
@@ -254,7 +431,9 @@ def load_data(
     - universe_codes：中证800与中证1000历史成份并集，个股记录和指数权重据此裁剪。
 
     输出：
-    - 返回至少含 ``date``、``asset_code`` 和配置字段的长表。
+    - 面板来源返回至少含 ``date``、``asset_code`` 和配置字段的长表。
+    - 明细来源按实际情况返回 ``source_date``、``report_period``、``asset_code``；
+      不存在证券代码的当前管理层快照只返回配置字段。
     - 指数权重额外包含 ``index_code``；财务数据额外包含 ``report_period``；
       历史行业数据改为包含 ``start_date`` 和 ``end_date``。
 
@@ -480,6 +659,11 @@ def _normalize_source_chunk(
         normalized_data["end_date"] = _parse_yyyymmdd(
             normalized_data[source_spec.interval_end_column]
         )
+    elif source_spec.kind == "records":
+        if source_spec.date_column is not None:
+            normalized_data["source_date"] = _parse_yyyymmdd(
+                normalized_data[source_spec.date_column]
+            )
     elif source_spec.kind != "static":
         normalized_data["date"] = _parse_yyyymmdd(normalized_data[source_spec.date_column])
         if source_spec.actual_date_column is not None:
@@ -492,9 +676,9 @@ def _normalize_source_chunk(
                 normalized_data[date_column]
             )
 
-    if source_spec.asset_column is None:
+    if source_spec.asset_column is None and file_index_code is not None:
         normalized_data["asset_code"] = file_index_code
-    else:
+    elif source_spec.asset_column is not None:
         normalized_data["asset_code"] = normalized_data[source_spec.asset_column].astype("string")
 
     if source_spec.index_files and source_spec.asset_column is not None:
@@ -512,7 +696,7 @@ def _normalize_source_chunk(
 
     normalized_data = _filter_source_dates(
         normalized_data=normalized_data,
-        source_kind=source_spec.kind,
+        source_spec=source_spec,
         start_date=start_date,
         end_date=end_date,
     )
@@ -534,7 +718,7 @@ def _normalize_source_chunk(
 # 按数据的时间语义保留构建区间内所需记录。
 def _filter_source_dates(
     normalized_data: pd.DataFrame,
-    source_kind: SourceKind,
+    source_spec: DataSourceSpec,
     start_date: pd.Timestamp,
     end_date: pd.Timestamp,
 ) -> pd.DataFrame:
@@ -543,7 +727,7 @@ def _filter_source_dates(
 
     输入：
     - normalized_data：已经包含统一日期字段的长表分块。
-    - source_kind：来源时间类型。
+    - source_spec：来源时间类型及可用日期字段。
     - start_date、end_date：面板开始日和结束日。
 
     输出：
@@ -553,6 +737,7 @@ def _filter_source_dates(
     - 日频记录严格限制在配置区间；事件和财务数据额外保留开始日前一年作为首日状态。
     - 区间记录只保留与目标日期范围相交的记录，空结束日视为持续有效。
     """
+    source_kind = source_spec.kind
     if source_kind == "static":
         return normalized_data
     if source_kind == "interval":
@@ -561,6 +746,16 @@ def _filter_source_dates(
         return normalized_data[
             overlaps_start & (normalized_data["start_date"] <= end_date)
         ]
+    if source_kind == "records":
+        if source_spec.date_column is not None:
+            return normalized_data[
+                normalized_data["source_date"].between(start_date, end_date)
+            ]
+        if source_spec.report_period_column is not None:
+            return normalized_data[
+                normalized_data["report_period"].between(start_date, end_date)
+            ]
+        return normalized_data
 
     normalized_data = normalized_data.dropna(subset=["date", "asset_code"])
     if source_kind in {"event", "financial", "index_weight"}:

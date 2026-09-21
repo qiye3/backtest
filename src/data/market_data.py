@@ -2,9 +2,9 @@
 通过 YAML 构建和复用指数增强研究所需的日频市场数据。
 
 本模块是数据层面向 Factors 和回测模块的公共入口。``MarketData.from_yaml`` 按顺序
-建立基准交易日历、中证800与中证1000历史成员并集以及配置点名的来源面板，并把每个
-来源保存为独立 Parquet。``get_panel`` 从来源级 MultiIndex 宽表中取出标准二维面板；
-本模块不计算因子、不决定调仓频率，也不搜索配置之外的数据路径。
+建立基准交易日历、中证800与中证1000历史成员并集以及配置点名的来源数据，并把每个
+来源保存为独立 Parquet。``get_panel`` 读取标准二维面板，``get_records`` 读取不能
+无损透视的明细长表；本模块不计算因子、不决定调仓频率，也不搜索配置之外的数据路径。
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ import pandas as pd
 import yaml
 
 from src.data.cache import (
+    load_source_data,
     load_source_metadata,
-    load_source_panel,
     resolve_market_cache_directory,
     save_source_cache,
 )
@@ -31,24 +31,24 @@ REQUIRED_UNIVERSE_INDICES = {"000906.SH", "000852.SH"}
 
 class MarketData:
     """
-    保存已完成日期和证券列对齐的市场数据面板。
+    保存已完成规范化的市场数据。
 
     输入：
-    - source_panels：按标准来源名组织的来源级 MultiIndex 宽表。
+    - source_panels：按标准来源名组织的日频面板或明细长表。
     - calendar：由基准指数行情确定的交易日日历。
     - membership：中证800与中证1000逐日历史成份并集。
     - benchmark_index：回测基准指数 Wind 代码。
 
     输出：
     - 该类实例向下游公开 ``calendar``、``membership``、``benchmark_index`` 和
-      ``get_panel``，不直接暴露缓存构建状态。
+      ``get_panel``、``get_records``，不直接暴露缓存构建状态。
 
     功能和用途：
     - 作为 Factors、分组评价和回测共同使用的数据容器。
     - 构造器只保存已经完成的数据；文件读取和缓存写入由 ``from_yaml`` 负责。
     """
 
-    # 保存已经完成对齐的来源面板和公共时间、股票池信息。
+    # 保存已经完成规范化的来源数据和公共时间、股票池信息。
     def __init__(
         self,
         source_panels: Mapping[str, pd.DataFrame],
@@ -60,7 +60,7 @@ class MarketData:
         初始化可供下游直接读取的市场数据对象。
 
         输入：
-        - source_panels：来源名到完整缓存面板的映射。
+        - source_panels：来源名到完整缓存面板或明细长表的映射。
         - calendar：所有来源共享的交易日索引。
         - membership：日期乘股票的布尔研究股票池。
         - benchmark_index：用于构造日历和回测对照的基准指数代码。
@@ -70,7 +70,7 @@ class MarketData:
 
         功能和用途：
         - 保持对象初始化无磁盘副作用，使测试可以直接用内存面板构造实例。
-        - 来源面板保存在私有映射中，避免下游绕过字段选择接口依赖内部列结构。
+        - 来源数据保存在私有映射中，避免下游绕过标准读取接口依赖内部结构。
         """
         self._source_panels = dict(source_panels)
         self.calendar = calendar
@@ -96,7 +96,7 @@ class MarketData:
 
         功能和用途：
         - 先构建指数行情以确定唯一交易日日历，再构建历史成员和股票列范围。
-        - 之后逐个来源执行缓存读取或“原始长表→日频面板→Parquet”的构建链路。
+        - 之后逐个来源执行缓存读取；面板来源完成日频对齐，明细来源保留长表。
         - 原始数据、缓存路径、日期、来源与字段全部由 YAML 决定。
         """
         resolved_config_path = Path(config_path).expanduser().resolve()
@@ -146,7 +146,7 @@ class MarketData:
         for source_name, source_config in source_configs.items():
             if source_name == "index_price":
                 continue
-            source_panels[source_name] = _load_or_build_source_panel(
+            source_panels[source_name] = _load_or_build_source_data(
                 data_root=data_root,
                 cache_directory=cache_directory,
                 source_name=source_name,
@@ -168,13 +168,15 @@ class MarketData:
             "codes": universe_indices,
         }
         source_panels = {
-            source_name: _slice_source_panel(
+            source_name: _slice_source_data(
                 source_name=source_name,
-                source_panel=source_panel,
+                source_data=source_data,
                 source_config=requested_source_configs[source_name],
                 trading_calendar=trading_calendar,
+                start_date=start_date,
+                end_date=end_date,
             )
-            for source_name, source_panel in source_panels.items()
+            for source_name, source_data in source_panels.items()
         }
         membership = _merge_universe_membership(
             source_panels[MEMBERSHIP_SOURCE],
@@ -213,6 +215,8 @@ class MarketData:
         - 先选择来源级 MultiIndex 的 ``field`` 层，再按需选择 ``index_code`` 层。
         - 下游不需要了解每来源一个 Parquet 的内部列组织方式。
         """
+        if DATA_SOURCE_SPECS[source_name].kind == "records":
+            raise ValueError(f"明细来源应使用 get_records: {source_name}")
         source_panel = self._source_panels[source_name]
         field_panel = source_panel.xs(
             field_name,
@@ -247,6 +251,25 @@ class MarketData:
                 f"该来源不使用 forecast_year_offset: {source_name}"
             )
         return field_panel
+
+    def get_records(self, source_name: str) -> pd.DataFrame:
+        """
+        获取不能无损转换为二维面板的来源明细。
+
+        输入：
+        - source_name：YAML 已配置且类型为 ``records`` 的标准来源名。
+
+        输出：
+        - 返回已按配置日期、历史股票池和字段裁剪的长表。
+        - 可用标准键包括 ``asset_code``、``source_date`` 和 ``report_period``。
+
+        功能和用途：
+        - 保留同一股票、同一日期的全部业务记录，供 Factor 按自身口径聚合。
+        - ``source_date`` 仅表示来源原始日期，不自动解释为无前视的可得日。
+        """
+        if DATA_SOURCE_SPECS[source_name].kind != "records":
+            raise ValueError(f"面板来源应使用 get_panel: {source_name}")
+        return self._source_panels[source_name]
 
 
 # ===================== YAML 配置边界 ===================== #
@@ -376,7 +399,7 @@ def _source_metadata(
     start_date: pd.Timestamp,
     end_date: pd.Timestamp,
 ) -> dict[str, Any]:
-    """把会影响来源面板内容的配置规范为可持久化 metadata。"""
+    """把会影响来源缓存内容的配置规范为可持久化 metadata。"""
     filters = {
         str(filter_name): str(filter_value)
         for filter_name, filter_value in sorted(
@@ -471,8 +494,8 @@ def _prepare_source_cache(
     rebuild = refresh or needs_expansion
     if rebuild:
         return None, build_metadata, True
-    cached_panel = load_source_panel(cache_directory, source_name)
-    return cached_panel, build_metadata, False
+    cached_data = load_source_data(cache_directory, source_name)
+    return cached_data, build_metadata, False
 
 
 def _build_source_config(
@@ -627,7 +650,7 @@ def _merge_universe_membership(
 
 # ===================== 其他配置来源 ===================== #
 
-def _load_or_build_source_panel(
+def _load_or_build_source_data(
     data_root: Path,
     cache_directory: Path,
     source_name: str,
@@ -671,6 +694,15 @@ def _load_or_build_source_panel(
         universe_codes=universe_codes,
     )
     source_spec = DATA_SOURCE_SPECS[source_name]
+    if source_spec.kind == "records":
+        save_source_cache(
+            cache_directory,
+            source_name,
+            source_records,
+            build_metadata,
+        )
+        return source_records
+
     output_asset_codes = universe_codes
     if source_spec.asset_column is None:
         output_asset_codes = tuple(build_config["codes"])
@@ -690,13 +722,25 @@ def _load_or_build_source_panel(
     return source_panel
 
 
-def _slice_source_panel(
+def _slice_source_data(
     source_name: str,
-    source_panel: pd.DataFrame,
+    source_data: pd.DataFrame,
     source_config: Mapping[str, Any],
     trading_calendar: pd.DatetimeIndex,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
 ) -> pd.DataFrame:
-    """从共享缓存切出当前 YAML 声明的日期、字段和指数代码。"""
+    """从共享缓存切出当前 YAML 声明的数据范围和字段。"""
+    if source_name in DATA_SOURCE_SPECS:
+        if DATA_SOURCE_SPECS[source_name].kind == "records":
+            return _slice_source_records(
+                source_data=source_data,
+                source_config=source_config,
+                start_date=start_date,
+                end_date=end_date,
+            )
+
+    source_panel = source_data
     output_fields = list(source_config["fields"])
     if source_name in DATA_SOURCE_SPECS:
         if DATA_SOURCE_SPECS[source_name].kind == "financial":
@@ -731,3 +775,29 @@ def _slice_source_panel(
             drop_level=True,
         )
     return sliced_panel
+
+
+def _slice_source_records(
+    source_data: pd.DataFrame,
+    source_config: Mapping[str, Any],
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+) -> pd.DataFrame:
+    """从共享明细缓存保留当前 YAML 请求的时间范围、标准键和业务字段。"""
+    sliced_records = source_data
+    if "source_date" in sliced_records.columns:
+        date_mask = sliced_records["source_date"].between(start_date, end_date)
+        sliced_records = sliced_records.loc[date_mask]
+    elif "report_period" in sliced_records.columns:
+        period_mask = sliced_records["report_period"].between(start_date, end_date)
+        sliced_records = sliced_records.loc[period_mask]
+
+    standard_columns = [
+        column_name
+        for column_name in ("asset_code", "source_date", "report_period")
+        if column_name in sliced_records.columns
+    ]
+    output_columns = list(
+        dict.fromkeys([*standard_columns, *source_config["fields"]])
+    )
+    return sliced_records.loc[:, output_columns].reset_index(drop=True)

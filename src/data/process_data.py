@@ -45,7 +45,8 @@ def build_source_panel(
     - 日频、PIT、财务、区间和月度权重使用彼此独立的构造规则。
     - 该函数是 ``MarketData`` 编排层构建来源缓存时调用的统一入口。
     """
-    source_kind = DATA_SOURCE_SPECS[source_name].kind
+    source_spec = DATA_SOURCE_SPECS[source_name]
+    source_kind = source_spec.kind
     if source_kind == "daily":
         return _build_daily_panel(
             source_data,
@@ -61,8 +62,14 @@ def build_source_panel(
             asset_codes,
         )
     if source_kind == "financial":
+        financial_data = source_data
+        if source_spec.effective_next_trading_day:
+            financial_data = _move_events_to_next_trading_day(
+                source_data,
+                trading_calendar,
+            )
         return _build_financial_panel(
-            source_data,
+            financial_data,
             source_fields,
             trading_calendar,
             asset_codes,
@@ -89,6 +96,23 @@ def build_source_panel(
             asset_codes,
         )
     raise ValueError(f"没有对应的面板构造规则: {source_name}")
+
+
+def _move_events_to_next_trading_day(
+    source_data: pd.DataFrame,
+    trading_calendar: pd.DatetimeIndex,
+) -> pd.DataFrame:
+    """把公告记录的生效日移动到公告后的首个交易日。"""
+    event_positions = trading_calendar.searchsorted(
+        source_data["date"],
+        side="right",
+    )
+    within_calendar = event_positions < len(trading_calendar)
+    shifted_data = source_data.loc[within_calendar].copy()
+    shifted_data["date"] = trading_calendar.take(
+        event_positions[within_calendar]
+    )
+    return shifted_data
 
 
 # 将多个指数的纳入剔除区间展开成逐日布尔成员面板。
@@ -380,7 +404,7 @@ def _materialize_financial_field(
     if pd.api.types.is_datetime64_any_dtype(event_values.dtype):
         field_values = np.full(
             state_positions.shape,
-            np.datetime64("NaT"),
+            np.datetime64("NaT", "ns"),
             dtype="datetime64[ns]",
         )
     elif pd.api.types.is_numeric_dtype(event_values.dtype):
