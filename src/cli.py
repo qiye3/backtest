@@ -1053,6 +1053,7 @@ def _run_overall_evaluation(
         overall_result=overall_result,
         settings=config.raw["plots"],
         output_directory=cache_root / "00_overall",
+        evaluation_results=evaluation_results,
     )
 
 

@@ -91,64 +91,18 @@ def plot_evaluation(
         group_column = 0 if plot_settings["group_panel"] == "left" else 1
         bar_axis = axes[row_position, group_column]
         line_axis = axes[row_position, 1 - group_column]
-        group_observations = (
-            summary[horizon_mask]
-            .set_index("group_id")
-            .reindex(definitions["group_id"])
+        plot_group_return_bars(
+            axis=bar_axis,
+            definitions=definitions,
+            summary=summary[horizon_mask],
+            palette=palette,
+            title=(
+                f"{horizon_label} | groups: "
+                f"{summary.loc[horizon_mask, 'group_return_agg'].iloc[0]}, "
+                "dates: "
+                f"{summary.loc[horizon_mask, 'time_return_agg'].iloc[0]}"
+            ),
         )
-        bars = bar_axis.bar(
-            np.arange(len(definitions)),
-            group_observations["group_return"],
-            color=palette,
-            width=0.8,
-        )
-        labels, compact_labels = group_labels(definitions)
-        rotate_labels = not compact_labels
-        bar_axis.set_xticks(
-            np.arange(len(definitions)),
-            labels,
-            rotation=35 if rotate_labels else 0,
-            horizontalalignment="right" if rotate_labels else "center",
-            fontsize=8,
-        )
-        bar_axis.yaxis.set_major_formatter(
-            FuncFormatter(lambda value, _: f"{value * 10_000:g}bp")
-        )
-        bar_axis.axhline(0, color="#555555", linewidth=0.7)
-        bar_axis.set_title(
-            f"{horizon_label} | groups: "
-            f"{group_observations['group_return_agg'].iloc[0]}, dates: "
-            f"{group_observations['time_return_agg'].iloc[0]}",
-            fontsize=10,
-        )
-        bar_axis.set_ylabel("Aggregated forward return (bp)")
-        for group_position in np.flatnonzero(
-            group_observations["group_return"].isna().to_numpy()
-        ):
-            bar_axis.text(
-                group_position,
-                0,
-                "N/A",
-                horizontalalignment="center",
-                verticalalignment="bottom",
-                fontsize=8,
-            )
-        finite_returns = group_observations["group_return"].dropna().abs()
-        label_offset = max(
-            float(finite_returns.max()) if len(finite_returns) else 0.0,
-            0.002,
-        ) * 0.045
-        for bar, value in zip(bars, group_observations["group_return"]):
-            if pd.notna(value):
-                bar_axis.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    value + label_offset,
-                    f"{value * 10_000:.2f}bp",
-                    horizontalalignment="center",
-                    verticalalignment="bottom",
-                    fontsize=7,
-                )
-        bar_axis.margins(y=0.18)
 
         ic_horizon_mask = (
             (ic_series["horizon_value"] == horizon.horizon_value)
@@ -164,7 +118,6 @@ def plot_evaluation(
                 horizon_label,
                 plot_settings,
             )
-        style_axis(bar_axis)
         style_axis(line_axis)
         style_date_axis(line_axis)
     _plot_group_size_table(
@@ -173,6 +126,68 @@ def plot_evaluation(
         _shared_mean_group_sizes(group_return_result["detail"], definitions),
     )
     return save_figure(figure, output_stem, settings)
+
+
+def plot_group_return_bars(
+    axis: plt.Axes,
+    definitions: pd.DataFrame,
+    summary: pd.DataFrame,
+    palette: list[Any],
+    title: str,
+) -> None:
+    """按分组定义绘制 bp 柱状图，供单因子和跨因子图共用。"""
+    group_observations = (
+        summary.set_index("group_id").reindex(definitions["group_id"])
+    )
+    bars = axis.bar(
+        np.arange(len(definitions)),
+        group_observations["group_return"],
+        color=palette,
+        width=0.8,
+    )
+    labels, compact_labels = group_labels(definitions)
+    rotate_labels = not compact_labels
+    axis.set_xticks(
+        np.arange(len(definitions)),
+        labels,
+        rotation=35 if rotate_labels else 0,
+        horizontalalignment="right" if rotate_labels else "center",
+        fontsize=8,
+    )
+    axis.yaxis.set_major_formatter(
+        FuncFormatter(lambda value, _: f"{value * 10_000:g}bp")
+    )
+    axis.axhline(0, color="#555555", linewidth=0.7)
+    axis.set_title(title, fontsize=10)
+    axis.set_ylabel("Aggregated forward return (bp)")
+    for group_position in np.flatnonzero(
+        group_observations["group_return"].isna().to_numpy()
+    ):
+        axis.text(
+            group_position,
+            0,
+            "N/A",
+            horizontalalignment="center",
+            verticalalignment="bottom",
+            fontsize=8,
+        )
+    finite_returns = group_observations["group_return"].dropna().abs()
+    label_offset = max(
+        float(finite_returns.max()) if len(finite_returns) else 0.0,
+        0.002,
+    ) * 0.045
+    for bar, value in zip(bars, group_observations["group_return"]):
+        if pd.notna(value):
+            axis.text(
+                bar.get_x() + bar.get_width() / 2,
+                value + label_offset,
+                f"{value * 10_000:.2f}bp",
+                horizontalalignment="center",
+                verticalalignment="bottom",
+                fontsize=7,
+            )
+    axis.margins(y=0.18)
+    style_axis(axis)
 
 
 def _plot_group_size_table(

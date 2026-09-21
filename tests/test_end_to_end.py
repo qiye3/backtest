@@ -48,6 +48,7 @@ OVERALL_FIGURE_FILES = {
     "factor_correlation_heatmap.png",
     "factor_ic_distribution.png",
     "factor_return_distribution.png",
+    "group_return_4week_grid.png",
 }
 
 

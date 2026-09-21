@@ -187,6 +187,13 @@ CONFIG_DEFAULTS = {
             "rank_ic_color": "#174A73",
             "rank_ic_view": "monthly",
         },
+        "overall": {
+            "group_return_grid": {
+                "enabled": False,
+                "columns": 5,
+                "share_y_axis": True,
+            },
+        },
         "simple": {
             "enabled": True,
             "layout": "rows",
@@ -784,6 +791,7 @@ def _validate_plots(settings: Mapping[str, Any]) -> None:
         "legend_columns",
         "distribution",
         "evaluation",
+        "overall",
         "simple",
         "account",
         "strategy",
@@ -813,6 +821,7 @@ def _validate_plots(settings: Mapping[str, Any]) -> None:
     )
     _validate_distribution_plot(settings["distribution"])
     _validate_evaluation_plot(settings["evaluation"])
+    _validate_overall_plot(settings["overall"])
     _validate_simple_plot(settings["simple"])
     _validate_account_plot(settings["account"])
     _plot_keys(settings["strategy"], {"enabled"}, "strategy")
@@ -869,6 +878,31 @@ def _validate_evaluation_plot(settings: Mapping[str, Any]) -> None:
             settings["rank_ic_view"],
             {"monthly", "sampling"},
             "plots.evaluation.rank_ic_view",
+        )
+
+
+def _validate_overall_plot(settings: Mapping[str, Any]) -> None:
+    """校验跨因子四周分组收益汇总图设置。"""
+    _check_keys(
+        settings,
+        {"group_return_grid"},
+        {"group_return_grid"},
+        "plots.overall",
+    )
+    grid_settings = settings["group_return_grid"]
+    _plot_keys(
+        grid_settings,
+        {"enabled", "columns", "share_y_axis"},
+        "overall.group_return_grid",
+    )
+    if grid_settings["enabled"]:
+        _positive_integer(
+            grid_settings["columns"],
+            "plots.overall.group_return_grid.columns",
+        )
+        _boolean(
+            grid_settings["share_y_axis"],
+            "plots.overall.group_return_grid.share_y_axis",
         )
 
 

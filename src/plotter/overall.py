@@ -1,4 +1,4 @@
-"""绘制一批因子的相关性、RankIC 与多空收益分布。"""
+"""绘制跨因子相关性、RankIC、收益分布与四周分组收益。"""
 
 from __future__ import annotations
 
@@ -10,15 +10,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from src.plotter.style import save_figure, style_axis
+from src.plotter.evaluation import plot_group_return_bars
+from src.plotter.style import group_colors, save_figure, style_axis
+
+GROUP_RETURN_HORIZON_WEEKS = 4
 
 
 def plot_overall_evaluation(
     overall_result: Mapping[str, pd.DataFrame],
     settings: Mapping[str, Any],
     output_directory: str | Path,
+    evaluation_results: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, list[Path]]:
-    """把三类跨因子统计写入结果根目录下的 overall 目录。"""
+    """把跨因子统计图写入结果根目录下的 overall 目录。"""
     output_directory = Path(output_directory)
     output_directory.mkdir(parents=True, exist_ok=True)
     with plt.rc_context(
@@ -29,7 +33,7 @@ def plot_overall_evaluation(
             "ytick.labelsize": 9,
         }
     ):
-        return {
+        output_paths = {
             "factor_correlation": _plot_correlation_heatmap(
                 overall_result["factor_correlation"],
                 settings,
@@ -53,6 +57,103 @@ def plot_overall_evaluation(
                 basis_points=True,
             ),
         }
+        group_grid_settings = settings["overall"]["group_return_grid"]
+        if group_grid_settings["enabled"]:
+            output_paths["group_return_grid"] = plot_group_return_grid(
+                evaluation_results=evaluation_results,
+                settings=settings,
+                output_stem=output_directory / "group_return_4week_grid",
+            )
+        return output_paths
+
+
+def plot_group_return_grid(
+    evaluation_results: Mapping[str, Mapping[str, Any]] | None,
+    settings: Mapping[str, Any],
+    output_stem: Path,
+) -> list[Path]:
+    """将每个因子的四周分组收益汇集为一张可横向比较的大图。"""
+    if evaluation_results is None:
+        raise ValueError("四周分组收益汇总图需要 evaluation_results")
+
+    factor_summaries = _four_week_group_summaries(evaluation_results)
+    columns = min(
+        settings["overall"]["group_return_grid"]["columns"],
+        len(factor_summaries),
+    )
+    rows = (len(factor_summaries) + columns - 1) // columns
+    figure, axes = plt.subplots(
+        rows,
+        columns,
+        figsize=(max(settings["width"], columns * 3.4), rows * 3.1 + 0.5),
+        squeeze=False,
+        layout="constrained",
+    )
+    figure.suptitle("4-Week Group Returns by Factor", fontsize=14)
+    evaluation_settings = settings["evaluation"]
+    shared_y_axis = settings["overall"]["group_return_grid"][
+        "share_y_axis"
+    ]
+    if shared_y_axis:
+        all_returns = pd.concat(
+            [summary["group_return"] for _, _, summary in factor_summaries],
+            ignore_index=True,
+        ).dropna()
+        lower_limit = min(float(all_returns.min()), 0.0)
+        upper_limit = max(float(all_returns.max()), 0.0)
+        padding = max((upper_limit - lower_limit) * 0.15, 0.002)
+        shared_limits = (lower_limit - padding, upper_limit + padding)
+
+    for position, (factor_name, definitions, summary) in enumerate(
+        factor_summaries
+    ):
+        axis = axes.flat[position]
+        palette = group_colors(
+            evaluation_settings["group_colors"],
+            len(definitions),
+        )
+        plot_group_return_bars(
+            axis=axis,
+            definitions=definitions,
+            summary=summary,
+            palette=palette,
+            title=factor_name,
+        )
+        axis.tick_params(axis="x", labelrotation=45)
+        for tick_label in axis.get_xticklabels():
+            tick_label.set_horizontalalignment("right")
+        for value_label in axis.texts:
+            value_label.set_rotation(90)
+            value_label.set_fontsize(6)
+        if shared_y_axis:
+            axis.set_ylim(shared_limits)
+        if position % columns:
+            axis.set_ylabel("")
+
+    for axis in axes.flat[len(factor_summaries) :]:
+        axis.set_visible(False)
+    return save_figure(figure, output_stem, settings)
+
+
+def _four_week_group_summaries(
+    evaluation_results: Mapping[str, Mapping[str, Any]],
+) -> list[tuple[str, pd.DataFrame, pd.DataFrame]]:
+    """按输入顺序提取每个因子的四周分组定义和收益。"""
+    factor_summaries = []
+    for factor_name, result in evaluation_results.items():
+        summary = result["summary"]
+        selected = summary.loc[
+            (summary["horizon_value"] == GROUP_RETURN_HORIZON_WEEKS)
+            & (summary["horizon_unit"] == "weeks")
+        ]
+        if selected.empty:
+            raise ValueError(f"因子 {factor_name} 缺少 4 weeks 分组收益")
+        factor_summaries.append(
+            (factor_name, result["definitions"], selected)
+        )
+    if not factor_summaries:
+        raise ValueError("四周分组收益汇总图没有可绘制的因子")
+    return factor_summaries
 
 
 def _plot_correlation_heatmap(

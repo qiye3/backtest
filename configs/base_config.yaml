@@ -206,6 +206,14 @@ metrics:
   account_annual_return: compound
 
 plots:
+  overall:
+    group_return_grid:
+      # 是否在 00_overall 输出所有因子的 4 周分组收益对比大图。
+      enabled: true
+      # 大图每行的因子子图数量。
+      columns: 5
+      # true 统一所有子图收益轴，便于比较；false 各因子独立缩放。
+      share_y_axis: true
   distribution:
     # 单因子最多展示 10 万个样本，使用更细的柱宽观察集中区间和长尾。
     bins: 300
