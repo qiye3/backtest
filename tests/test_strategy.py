@@ -14,7 +14,11 @@ import yaml
 from src.backtest import engine as backtest_engine
 from src.backtest import iter_weight_backtests, run_weight_backtests
 from src.backtest.targets import rebalance_dates
-from src.cli import _plot_factor_checkpoints, _remaining_factor_plot_names
+from src.cli import (
+    _plot_factor_checkpoints,
+    _remaining_factor_plot_names,
+    run,
+)
 from src.config import load_config
 from src.data.market_data import MarketData
 from src.plotter.strategy import plot_strategy_backtest, plot_weight_deviation
@@ -121,6 +125,64 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(plot_names, {"distribution"})
         self.assertIsNone(
             plot_factor.call_args.kwargs["evaluation_settings"]
+        )
+
+    def test_strategy_config_can_reuse_factor_results_from_another_root(
+        self,
+    ) -> None:
+        """关闭因子计算时应从独立结果根读取已有面板。"""
+        source_config = yaml.safe_load(
+            Path("strategies/yfd_growth100_factors/run.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        with TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            factor_result_root = temporary_root / "factor_experiment"
+            strategy_output_root = temporary_root / "strategy_experiment"
+            source_config["run"]["factors"] = False
+            source_config["run"]["strategy_simple_backtest"] = False
+            source_config["run"]["plotter"] = False
+            source_config["factors"] = {
+                "result_root": str(factor_result_root),
+            }
+            strategy_config_directory = Path(
+                "strategies/yfd_growth100_factors/strategy_configs"
+            ).resolve()
+            source_config["strategies"]["config_directory"] = str(
+                strategy_config_directory
+            )
+            source_config["output"]["root"] = str(strategy_output_root)
+            config_path = temporary_root / "run.yaml"
+            config_path.write_text(
+                yaml.safe_dump(source_config, sort_keys=False),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            with (
+                patch("src.cli._load_market_data"),
+                patch(
+                    "src.cli.find_factor_names",
+                    return_value=("cni_growth100_score",),
+                ),
+                patch(
+                    "src.cli._calculate_strategy_target_checkpoints",
+                    return_value=("cni_growth100",),
+                ) as calculate_strategies,
+                patch("src.cli._save_strategy_summary_checkpoint"),
+                patch("src.cli._prepare_retained_checkpoints"),
+                patch("src.cli._publish_successful_run", return_value={}),
+            ):
+                run(config)
+
+        self.assertEqual(config.factor_result_root, factor_result_root.resolve())
+        self.assertEqual(config.output_root, strategy_output_root.resolve())
+        self.assertIsNone(config.factor_config_directory)
+        self.assertEqual(
+            calculate_strategies.call_args.args[1],
+            factor_result_root.resolve(),
         )
 
     def test_growth100_portfolio_limits_replacements_and_caps_weights(

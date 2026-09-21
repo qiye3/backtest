@@ -16,6 +16,8 @@ run:
 factors:
   # 专属目录只加载成长100综合评分，避免同时计算普通 Factor 示例。
   config_directory: factor_configs
+  # 复用其他实验时将 run.factors 设为 false，并填写其结果根目录。
+  # result_root: /absolute/path/to/existing_factor_outputs
 
 strategies:
   config_directory: strategy_configs

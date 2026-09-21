@@ -35,6 +35,11 @@ def main() -> None:
 
     config = yaml.safe_load((strategy_root / "run.yaml").read_text(encoding="utf-8"))
     config["factors"]["config_directory"] = str(strategy_root / "factor_configs")
+    if "result_root" in config["factors"]:
+        factor_result_root = Path(config["factors"]["result_root"]).expanduser()
+        if not factor_result_root.is_absolute():
+            factor_result_root = strategy_root / factor_result_root
+        config["factors"]["result_root"] = str(factor_result_root.resolve())
     config["strategies"]["config_directory"] = str(
         strategy_root / "strategy_configs"
     )
@@ -67,7 +72,11 @@ def main() -> None:
     from src.strategy.config import load_strategies
 
     run_config = load_config(config_path)
-    factors = load_factors(run_config.factor_config_directory)
+    factors = (
+        load_factors(run_config.factor_config_directory)
+        if run_config.raw["run"]["factors"]
+        else []
+    )
     strategies = load_strategies(run_config.strategy_config_directory)
     if arguments.dry_run:
         print(

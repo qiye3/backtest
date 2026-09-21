@@ -136,7 +136,7 @@ def _run_pipeline(config: RunConfig, progress: _CliProgress) -> RunSummary:
     progress.complete("market_data")
     return_panel = _load_external_return_panel(config)
 
-    factor_source = config.output_root
+    factor_source = config.factor_result_root
     if run_settings["factors"]:
         progress.start("factors")
         factor_names = _calculate_factor_checkpoint(
@@ -148,7 +148,7 @@ def _run_pipeline(config: RunConfig, progress: _CliProgress) -> RunSummary:
         stage_counts["factors"] = len(factor_names)
         progress.complete("factors")
     else:
-        factor_names = find_factor_names(config.output_root)
+        factor_names = find_factor_names(config.factor_result_root)
 
     group_return_source = config.output_root
     if run_settings["group_return"]:

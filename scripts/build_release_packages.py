@@ -58,6 +58,8 @@ python3 scripts/run_yfd100.py \\
 
 yfd100 默认启用策略 simple 回测，account 回测关闭。
 
+复用其他实验已经保存的 `factor.parquet` 时，将 `run.factors` 设为 `false`，并通过 `factors.result_root` 指向原实验输出根；策略结果仍写入当前 `output.root`。
+
 ## 直接运行框架
 
 ```bash

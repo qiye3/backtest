@@ -210,12 +210,13 @@ CONFIG_DEFAULTS = {
 
 @dataclass(frozen=True)
 class RunConfig:
-    """保存主配置、已解析输出目录和可选 Factor 配置目录。"""
+    """保存主配置以及各阶段使用的已解析目录。"""
 
     path: Path
     raw: dict[str, Any]
     output_root: Path
     factor_config_directory: Path | None
+    factor_result_root: Path
     strategy_config_directory: Path | None
     external_return_path: Path | None
 
@@ -288,19 +289,29 @@ def load_config(config_path: str | Path) -> RunConfig:
             external_return_config["path"],
         )
 
+    output_root = _resolve_path(resolved_path, raw_config["output"]["root"])
     factor_config_directory = None
-    if run_settings["factors"]:
+    factor_result_root = output_root
+    if "factors" in raw_config:
         factors_config = _section(raw_config, "factors")
         _check_keys(
             factors_config,
-            {"config_directory"},
-            {"config_directory"},
+            {"config_directory"} if run_settings["factors"] else set(),
+            {"config_directory", "result_root"},
             "factors",
         )
-        factor_config_directory = _resolve_path(
-            resolved_path,
-            factors_config["config_directory"],
-        )
+        if run_settings["factors"]:
+            factor_config_directory = _resolve_path(
+                resolved_path,
+                factors_config["config_directory"],
+            )
+        if "result_root" in factors_config:
+            factor_result_root = _resolve_path(
+                resolved_path,
+                factors_config["result_root"],
+            )
+    elif run_settings["factors"]:
+        _section(raw_config, "factors")
     strategy_config_directory = None
     if run_settings["strategies"]:
         strategies_config = _section(raw_config, "strategies")
@@ -343,8 +354,9 @@ def load_config(config_path: str | Path) -> RunConfig:
     return RunConfig(
         path=resolved_path,
         raw=raw_config,
-        output_root=_resolve_path(resolved_path, raw_config["output"]["root"]),
+        output_root=output_root,
         factor_config_directory=factor_config_directory,
+        factor_result_root=factor_result_root,
         strategy_config_directory=strategy_config_directory,
         external_return_path=external_return_path,
     )
