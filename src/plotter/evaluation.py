@@ -52,23 +52,22 @@ def plot_evaluation(
     figure = plt.figure(
         figsize=(
             settings["width"],
-            (plot_row_height + table_row_height) * len(horizons) + 0.5,
+            plot_row_height * len(horizons) + table_row_height + 0.5,
         ),
         layout="constrained",
     )
-    height_ratios = [plot_row_height, table_row_height] * len(horizons)
+    height_ratios = [plot_row_height] * len(horizons) + [table_row_height]
     grid = figure.add_gridspec(
-        len(horizons) * 2,
+        len(horizons) + 1,
         2,
         height_ratios=height_ratios,
         width_ratios=[1, 1],
     )
     axes = np.empty((len(horizons), 2), dtype=object)
-    table_axes = []
     for row_position in range(len(horizons)):
-        axes[row_position, 0] = figure.add_subplot(grid[row_position * 2, 0])
-        axes[row_position, 1] = figure.add_subplot(grid[row_position * 2, 1])
-        table_axes.append(figure.add_subplot(grid[row_position * 2 + 1, :]))
+        axes[row_position, 0] = figure.add_subplot(grid[row_position, 0])
+        axes[row_position, 1] = figure.add_subplot(grid[row_position, 1])
+    table_axis = figure.add_subplot(grid[-1, :])
     set_figure_title(
         figure,
         f"{factor_name} | Forward-return evaluation",
@@ -165,21 +164,21 @@ def plot_evaluation(
                 horizon_label,
                 plot_settings,
             )
-        _plot_group_size_table(
-            table_axes[row_position],
-            definitions,
-            group_observations,
-        )
         style_axis(bar_axis)
         style_axis(line_axis)
         style_date_axis(line_axis)
+    _plot_group_size_table(
+        table_axis,
+        definitions,
+        _shared_mean_group_sizes(group_return_result["detail"], definitions),
+    )
     return save_figure(figure, output_stem, settings)
 
 
 def _plot_group_size_table(
     axis: plt.Axes,
     definitions: pd.DataFrame,
-    group_observations: pd.DataFrame,
+    mean_group_sizes: pd.Series,
 ) -> None:
     """按实际分组定义分行展示评价期内的平均股票数。"""
     axis.axis("off")
@@ -189,10 +188,7 @@ def _plot_group_size_table(
             start_position : start_position + GROUPS_PER_TABLE_BLOCK
         ]
         group_headers = block["label"].astype(str).tolist()
-        mean_sizes = group_observations.loc[
-            block["group_id"],
-            "mean_group_size",
-        ]
+        mean_sizes = mean_group_sizes.reindex(block["group_id"])
         size_labels = [
             f"{mean_size:.1f}" if pd.notna(mean_size) else "N/A"
             for mean_size in mean_sizes
@@ -219,6 +215,21 @@ def _plot_group_size_table(
         cell.set_linewidth(0.6)
         if column_position == 0:
             cell.set_text_props(weight="bold")
+
+
+def _shared_mean_group_sizes(
+    detail: pd.DataFrame,
+    definitions: pd.DataFrame,
+) -> pd.Series:
+    """忽略重复预测周期，统计每个采样日各组的平均股票数。"""
+    unique_group_sizes = detail[
+        ["date", "group_id", "n_group_stocks"]
+    ].drop_duplicates(["date", "group_id"])
+    return (
+        unique_group_sizes.groupby("group_id", sort=False)["n_group_stocks"]
+        .mean()
+        .reindex(definitions["group_id"])
+    )
 
 
 def _plot_sampling_ic(
