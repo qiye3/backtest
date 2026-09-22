@@ -1,0 +1,15 @@
+name: cni_free_cashflow
+factor_name: cni_free_cashflow_score
+implementation:
+  module: strategies.roadshow_indices.portfolio
+  class: FreeCashFlowPortfolio
+benchmark_index: 000906.SH
+rebalance:
+  frequency: quarterly
+  intervals: [1]
+  months: [3, 6, 9, 12]
+  date_rule: second_friday_next_trading_day
+params:
+  top_n: 100
+  insufficient_candidates_policy: warn_and_use_all
+  max_weight: 0.10

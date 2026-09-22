@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from numbers import Real
@@ -339,6 +339,11 @@ def load_config(config_path: str | Path) -> RunConfig:
             resolved_path,
             strategies_config["config_directory"],
         )
+    _complete_strategy_market_data_sources(
+        raw_config,
+        strategy_config_directory,
+        output_root,
+    )
     if run_settings["group_return"] or run_settings["overall_evaluation"]:
         _validate_group_return(_section(raw_config, "group_return"))
     for stage in ["simple_backtest", "account_backtest"]:
@@ -373,6 +378,70 @@ def load_config(config_path: str | Path) -> RunConfig:
         strategy_config_directory=strategy_config_directory,
         external_return_path=external_return_path,
     )
+
+
+def _complete_strategy_market_data_sources(
+    raw_config: dict[str, Any],
+    strategy_config_directory: Path | None,
+    output_root: Path,
+) -> None:
+    """把策略基准权重依赖补入本次实际运行配置。"""
+    run_settings = raw_config["run"]
+    strategy_calculation_enabled = (
+        any(
+            run_settings[stage_name]
+            for stage_name in [
+                "strategies",
+                "strategy_simple_backtest",
+                "strategy_account_backtest",
+            ]
+        )
+        or raw_config.get("strategy_analysis", {}).get("enabled", False)
+    )
+    if not strategy_calculation_enabled:
+        return
+
+    benchmark_indices = set()
+    if strategy_config_directory is not None:
+        for strategy_path in sorted(strategy_config_directory.glob("*.yaml")):
+            strategy_config = yaml.safe_load(strategy_path.read_text(encoding="utf-8"))
+            benchmark_indices.add(str(strategy_config["benchmark_index"]))
+    else:
+        target_root = output_root / "strategies"
+        for target_path in sorted(target_root.glob("*/target_weights.parquet")):
+            benchmark_values = pd.read_parquet(
+                target_path,
+                columns=["benchmark_index"],
+            )["benchmark_index"]
+            benchmark_indices.update(benchmark_values.astype(str).unique())
+    if not benchmark_indices:
+        return
+
+    sources = raw_config["market_data"]["sources"]
+    weight_source = sources.setdefault(
+        "index_weights_monthly",
+        {"codes": [], "fields": []},
+    )
+    weight_source["codes"] = _append_unique(
+        weight_source.get("codes", []),
+        benchmark_indices,
+    )
+    weight_source["fields"] = _append_unique(
+        weight_source.get("fields", []),
+        {"I_WEIGHT"},
+    )
+    index_price_source = sources["index_price"]
+    index_price_source["codes"] = _append_unique(
+        index_price_source["codes"],
+        benchmark_indices,
+    )
+
+
+def _append_unique(values: Iterable[Any], additions: Iterable[Any]) -> list[Any]:
+    """按原有顺序追加尚未配置的值。"""
+    completed = list(values)
+    completed.extend(value for value in sorted(additions) if value not in completed)
+    return completed
 
 
 def _merge_config_defaults(

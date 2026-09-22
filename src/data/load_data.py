@@ -806,10 +806,10 @@ def _filter_forecast_years(
     return selected_data
 
 
-# 将 Wind 风格的八位日期转换成 pandas 日期类型。
+# 将 Wind 风格的八位或 ISO 日期转换成 pandas 日期类型。
 def _parse_yyyymmdd(values: pd.Series) -> pd.Series:
     """
-    解析原始 CSV 中的八位日期列。
+    解析原始 CSV 中的八位或 ISO 日期列。
 
     输入：
     - values：可能由 pandas 推断为字符串、整数或带空值浮点数的日期序列。
@@ -819,14 +819,17 @@ def _parse_yyyymmdd(values: pd.Series) -> pd.Series:
 
     功能和用途：
     - 先转换成可空整数再按 ``YYYYMMDD`` 解析，避免 ``20200101.0`` 破坏日期格式。
+    - 数字格式解析失败时，再按明确的 ``YYYY-MM-DD`` 格式补充。
     - 同一转换规则供交易日、公告日、报告期和区间边界使用。
     """
     numeric_dates = pd.to_numeric(values, errors="coerce").astype("Int64")
-    return pd.to_datetime(
+    parsed_dates = pd.to_datetime(
         numeric_dates.astype("string"),
         format="%Y%m%d",
         errors="coerce",
     )
+    iso_dates = pd.to_datetime(values, format="%Y-%m-%d", errors="coerce")
+    return parsed_dates.fillna(iso_dates)
 
 
 # 判断年度文件是否覆盖本次需要读取的年份。

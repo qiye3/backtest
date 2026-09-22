@@ -83,6 +83,7 @@ class MarketData:
         cls,
         config_path: str | Path,
         refresh: bool = False,
+        market_data_config: Mapping[str, Any] | None = None,
     ) -> MarketData:
         """
         从 YAML 构建或复用市场数据面板。
@@ -90,6 +91,7 @@ class MarketData:
         输入：
         - config_path：包含 ``market_data`` 分区的 YAML 路径。
         - refresh：为假时优先复用已有来源 Parquet；为真时从原始 CSV 重建并覆盖。
+        - market_data_config：已由主配置器补全的数据分区；直接调用时可省略。
 
         输出：
         - 返回包含交易日历、历史股票池和全部配置来源的 ``MarketData``。
@@ -100,23 +102,26 @@ class MarketData:
         - 原始数据、缓存路径、日期、来源与字段全部由 YAML 决定。
         """
         resolved_config_path = Path(config_path).expanduser().resolve()
-        market_data_config = _read_market_data_config(resolved_config_path)
+        if market_data_config is None:
+            resolved_market_data_config = _read_market_data_config(resolved_config_path)
+        else:
+            resolved_market_data_config = dict(market_data_config)
+            _validate_market_data_config(resolved_market_data_config)
         cache_directory = resolve_market_cache_directory(
             resolved_config_path,
-            market_data_config["cache_root"],
+            resolved_market_data_config["cache_root"],
         )
-        data_root = Path(market_data_config["source_root"]).expanduser()
+        data_root = Path(resolved_market_data_config["source_root"]).expanduser()
         if not data_root.is_absolute():
             data_root = resolved_config_path.parent / data_root
         data_root = data_root.resolve()
-        start_date = pd.Timestamp(market_data_config["start_date"])
-        end_date = pd.Timestamp(market_data_config["end_date"])
-        benchmark_index = str(market_data_config["benchmark_index"])
+        start_date = pd.Timestamp(resolved_market_data_config["start_date"])
+        end_date = pd.Timestamp(resolved_market_data_config["end_date"])
+        benchmark_index = str(resolved_market_data_config["benchmark_index"])
         universe_indices = tuple(
-            str(index_code)
-            for index_code in market_data_config["universe_indices"]
+            str(index_code) for index_code in resolved_market_data_config["universe_indices"]
         )
-        source_configs = market_data_config["sources"]
+        source_configs = resolved_market_data_config["sources"]
 
         index_price_panel, index_price_metadata = _load_index_price_panel(
             data_root=data_root,

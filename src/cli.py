@@ -1315,6 +1315,7 @@ def _load_market_data(config: RunConfig) -> MarketData | None:
     return MarketData.from_yaml(
         config.path,
         refresh=config.raw["run"]["refresh_market_data"],
+        market_data_config=config.raw["market_data"],
     )
 
 

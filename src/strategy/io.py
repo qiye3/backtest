@@ -17,6 +17,7 @@ def save_strategy_targets(
 ) -> Path:
     """把一个策略的全部调仓周期保存为一张稀疏长表。"""
     target_frames = []
+    stored_diagnostics = result.get("selection_diagnostics", {})
     for interval, target_weights in result["periods"].items():
         nonzero_weights = target_weights.where(target_weights != 0).stack()
         target_frame = nonzero_weights.rename("target_weight").reset_index()
@@ -27,6 +28,15 @@ def save_strategy_targets(
             "rebalance_frequency",
             result["rebalance_frequency"],
         )
+        diagnostics = stored_diagnostics.get(interval)
+        if diagnostics is None:
+            diagnostics = pd.DataFrame(
+                {
+                    "date": target_weights.index,
+                    "selected_count": target_weights.ne(0).sum(axis=1).to_numpy(),
+                }
+            )
+        target_frame = target_frame.merge(diagnostics, on="date", how="left")
         target_frames.append(target_frame)
 
     stored_targets = pd.concat(target_frames, ignore_index=True)
@@ -58,12 +68,34 @@ def load_strategy_targets(
         ).fillna(0.0)
 
     first_row = stored_targets.iloc[0]
+    selection_diagnostics = {}
+    diagnostic_columns = [
+        column_name
+        for column_name in [
+            "candidate_count",
+            "requested_top_n",
+            "selected_count",
+            "status",
+        ]
+        if column_name in stored_targets
+    ]
+    if diagnostic_columns:
+        for interval, interval_targets in stored_targets.groupby(
+            "rebalance_interval",
+            sort=True,
+        ):
+            selection_diagnostics[int(interval)] = (
+                interval_targets[["date", *diagnostic_columns]]
+                .drop_duplicates("date")
+                .reset_index(drop=True)
+            )
     return {
         "strategy_name": strategy_name,
         "factor_name": first_row["factor_name"],
         "benchmark_index": first_row["benchmark_index"],
         "rebalance_frequency": first_row["rebalance_frequency"],
         "periods": periods,
+        "selection_diagnostics": selection_diagnostics,
     }
 
 

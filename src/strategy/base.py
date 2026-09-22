@@ -18,6 +18,7 @@ class PortfolioRule(ABC):
         self.name = self.config["name"]
         self.factor_name = self.config["factor_name"]
         self.benchmark_index = self.config["benchmark_index"]
+        self.selection_diagnostics = pd.DataFrame()
 
     @abstractmethod
     def build_target_weights(

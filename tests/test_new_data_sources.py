@@ -141,7 +141,7 @@ class NewDataSourceTests(unittest.TestCase):
             pd.DataFrame(
                 {
                     "stock_code": ["000001.SZ", "000001.SZ"],
-                    "ann_dt": [20240202, 20240202],
+                    "ann_dt": [20240202, "2024-02-05"],
                     "transact_quantity": [100.0, 200.0],
                 }
             ).to_csv(trade_directory / "major_holder_trade_2024.csv", index=False)
@@ -156,6 +156,10 @@ class NewDataSourceTests(unittest.TestCase):
 
             trade_records = market_data.get_records("major_holder_trade")
             self.assertEqual(trade_records["transact_quantity"].tolist(), [100.0, 200.0])
+            self.assertEqual(
+                trade_records["source_date"].tolist(),
+                [pd.Timestamp("2024-02-02"), pd.Timestamp("2024-02-05")],
+            )
             self.assertTrue((cache_root / "major_holder_trade.parquet").exists())
             with self.assertRaisesRegex(ValueError, "get_records"):
                 market_data.get_panel("major_holder_trade", "transact_quantity")
