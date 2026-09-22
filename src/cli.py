@@ -28,11 +28,11 @@ from src.data.market_data import MarketData
 from src.data.return_data import load_return_panel
 from src.data.style_exposure import load_or_build_style_exposures
 from src.factors import iter_factor_panels, load_factors
+from src.factors.domains import build_domain_masks
 from src.factors.io import (
     FACTOR_FILE_NAME,
     find_factor_names,
     load_factor_panel,
-    load_factor_panels,
     save_factor_panels,
 )
 from src.group_return import iter_factor_evaluations
@@ -121,13 +121,18 @@ class _CliProgress:
 def run(
     config: RunConfig,
     show_progress: bool = False,
+    market_data: MarketData | None = None,
 ) -> RunSummary:
-    """按配置运行阶段，并只返回不含 DataFrame 的轻量摘要。"""
+    """按配置运行阶段；批量编排可传入已构造的共享 MarketData。"""
     with _CliProgress(config, show_progress) as progress:
-        return _run_pipeline(config, progress)
+        return _run_pipeline(config, progress, market_data)
 
 
-def _run_pipeline(config: RunConfig, progress: _CliProgress) -> RunSummary:
+def _run_pipeline(
+    config: RunConfig,
+    progress: _CliProgress,
+    shared_market_data: MarketData | None,
+) -> RunSummary:
     """以磁盘 checkpoint 隔离各阶段，并在成功后发布最终结果。"""
     cache_root = config.output_root / PIPELINE_CACHE_DIRECTORY
     _prepare_pipeline_cache(cache_root)
@@ -139,12 +144,17 @@ def _run_pipeline(config: RunConfig, progress: _CliProgress) -> RunSummary:
         config_snapshot_path,
         config.output_root / config_snapshot_path.name,
     )
+    if config.factor_domains is not None:
+        _publish_file(
+            cache_root / "domain_config_snapshot.yaml",
+            config.output_root / "domain_config_snapshot.yaml",
+        )
 
     run_settings = config.raw["run"]
     stage_counts: dict[str, int] = {}
 
     progress.start("market_data")
-    market_data = _load_market_data(config)
+    market_data = shared_market_data or _load_market_data(config)
     progress.complete("market_data")
     return_panel = _load_external_return_panel(config)
 
@@ -190,6 +200,7 @@ def _run_pipeline(config: RunConfig, progress: _CliProgress) -> RunSummary:
         progress.start("overall_evaluation")
         _run_overall_evaluation(
             config,
+            factor_names,
             factor_source,
             group_return_source,
             market_data,
@@ -485,11 +496,30 @@ def _calculate_factor_checkpoint(
 ) -> tuple[str, ...]:
     """有界并行计算因子，并在单个结果完成后立即写入 checkpoint。"""
     factors = load_factors(config.factor_config_directory)
+    domain_masks = None
+    domain_factor_names: tuple[str, ...] = ()
+    if config.factor_domains is not None:
+        loaded_factor_names = {factor.name for factor in factors}
+        missing_factor_names = (
+            set(config.factor_domains.factor_names) - loaded_factor_names
+        )
+        if missing_factor_names:
+            raise ValueError(
+                "domain factor_names 不在本次 Factor 配置中: "
+                f"{sorted(missing_factor_names)}"
+            )
+        domain_masks = build_domain_masks(
+            config.factor_domains.domains,
+            market_data,
+        )
+        domain_factor_names = config.factor_domains.factor_names
     output_names = []
     for factor_name, factor_panel in iter_factor_panels(
         factors=factors,
         market_data=market_data,
         max_workers=config.raw["run"]["max_workers"],
+        domain_masks=domain_masks,
+        domain_factor_names=domain_factor_names,
     ):
         save_factor_panels({factor_name: factor_panel}, cache_root)
         output_names.append(factor_name)
@@ -1112,13 +1142,17 @@ def _backtest_plot_settings(
 
 def _run_overall_evaluation(
     config: RunConfig,
+    factor_names: Iterable[str],
     factor_source: Path,
     group_return_source: Path,
     market_data: MarketData,
     cache_root: Path,
 ) -> None:
     """只为整体评价同时加载因子与评价结果，并输出到 checkpoint。"""
-    factor_panels = load_factor_panels(factor_source)
+    factor_panels = {
+        factor_name: load_factor_panel(factor_name, factor_source)
+        for factor_name in factor_names
+    }
     evaluation_results = load_evaluation_results(
         factor_panels,
         group_return_source,
@@ -1210,11 +1244,17 @@ def _publish_successful_run(
             factor_names,
             published_factor_root,
         )
-    snapshot_path = _publish_file(
-        cache_root / "config_snapshot.yaml",
-        config.output_root / "config_snapshot.yaml",
+    snapshot_names = ["config_snapshot.yaml"]
+    if config.factor_domains is not None:
+        snapshot_names.append("domain_config_snapshot.yaml")
+    snapshot_paths = tuple(
+        _publish_file(
+            cache_root / snapshot_name,
+            config.output_root / snapshot_name,
+        )
+        for snapshot_name in snapshot_names
     )
-    output_paths["config"] = (snapshot_path,)
+    output_paths["config"] = snapshot_paths
 
     factor_summary_paths = [
         summary_cache_root / file_name

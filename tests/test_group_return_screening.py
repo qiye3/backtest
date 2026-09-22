@@ -103,6 +103,9 @@ class FactorScreeningSummaryTests(unittest.TestCase):
         screening_summary = pd.DataFrame(
             {
                 "factor_name": ["factor_a", "factor_a"],
+                "base_factor_name": ["factor_a", "factor_a"],
+                "variant": ["raw", "raw"],
+                "domain": ["full_universe", "full_universe"],
                 "target_type": ["stock_return", "stock_return"],
                 "horizon_value": [1, 2],
                 "horizon_unit": ["weeks", "weeks"],

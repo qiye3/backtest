@@ -1,0 +1,36 @@
+# 只有这里列出的基础因子会生成 domain variants；名称必须与 Factor YAML 的 name 一致。
+factor_names:
+  - return_10d
+
+# 每个域会成为与 raw、industry_neutral 同级的 domain_<name> variant。
+domains:
+  # 指数历史成员域；index_code 必须已列入主配置的 market_data.universe_indices。
+  - name: csi800
+    rule:
+      type: index_membership
+      index_code: 000906.SH
+
+  # 分类取值域；values 可以包含一个或多个需要保留的明确分类代码。
+  - name: citics_bank
+    rule:
+      type: category
+      # source 和 field 必须已在主配置 market_data.sources 中声明。
+      source: industry_history
+      field: ind_class_code
+      values:
+        - CI005000
+
+  # 数值字段分位域；逐日只在当时有效的研究股票池中计算截面百分位。
+  - name: large_cap_top30
+    rule:
+      type: percentile
+      source: stock_valuation
+      field: S_VAL_MV
+      # 区间为左闭右开；上界等于 1 时包含最高分位。
+      range: [0.7, 1.0]
+      # transform 可省略；配置后先算每只股票的时间滚动均值，再做截面排名。
+      transform:
+        method: rolling_mean
+        window: 20
+        # 可省略，默认与 window 相同。
+        min_periods: 20

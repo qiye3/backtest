@@ -107,6 +107,25 @@ params:
 
 配置目录中的所有 `*.yaml` 会按文件名排序后动态导入并批量计算。
 
+## 分域研究
+
+主配置可通过 `factors.domain_config` 引用独立 domains YAML。文件中的
+`factor_names` 只选择需要分域的基础因子，其余因子仍按原配置计算；每个域作为与
+`raw`、`industry_neutral` 同级的 `domain_<name>` variant，从共享的截面处理结果
+直接生成。完整配置示例见 `configs/domains.example.yaml`。
+
+需要为选中的每个基础因子分别生成域对比 overall 大图时运行：
+
+```bash
+python -m scripts.run_domain_research \
+  --config /absolute/path/to/run.yaml
+```
+
+脚本只遍历 domains YAML 的 `factor_names`，共享一次 MarketData，并在
+`output.root/<base_factor_name>/00_overall/` 下输出因子分布和四周分组收益大图。
+正式长任务默认进入 tmux；本地前台运行时增加 `--foreground`，只校验配置时使用
+`--dry-run`。
+
 ## 测试与检查
 
 ```bash

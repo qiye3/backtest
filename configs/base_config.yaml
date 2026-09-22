@@ -25,6 +25,8 @@ run:
 factors:
   # Factor YAML 所在目录；相对路径以本主配置文件所在目录为基准。
   config_directory: ../examples/config/base_factors
+  # 可选分域配置；文件内 factor_names 决定哪些基础因子追加 domain variants。
+  # domain_config: domains.example.yaml
 
 output:
   # 正式结果分别写入该目录下的 factors、strategies 和 summaries。

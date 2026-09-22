@@ -13,6 +13,11 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from src.factors.domains import (
+    DomainResearchConfig,
+    domain_config_snapshot,
+    load_domain_config,
+)
 from src.group_return.grouping import validate_ranges
 from src.output_layout import factor_output_root
 
@@ -235,6 +240,7 @@ class RunConfig:
     raw: dict[str, Any]
     output_root: Path
     factor_config_directory: Path | None
+    factor_domains: DomainResearchConfig | None
     factor_result_root: Path
     strategy_config_directory: Path | None
     external_return_path: Path | None
@@ -246,10 +252,26 @@ def save_config_snapshot(
 ) -> Path:
     """把本次实际使用且已补全默认值的完整配置保存到输出根目录。"""
     snapshot_root = config.output_root if output_root is None else Path(output_root)
+    snapshot_config = deepcopy(config.raw)
+    if config.factor_domains is not None:
+        domain_snapshot_name = "domain_config_snapshot.yaml"
+        snapshot_config["factors"]["domain_config"] = domain_snapshot_name
+        (snapshot_root / domain_snapshot_name).parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+        (snapshot_root / domain_snapshot_name).write_text(
+            yaml.safe_dump(
+                domain_config_snapshot(config.factor_domains),
+                allow_unicode=True,
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
     output_path = snapshot_root / "config_snapshot.yaml"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
-        yaml.safe_dump(config.raw, allow_unicode=True, sort_keys=False),
+        yaml.safe_dump(snapshot_config, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
     return output_path
@@ -309,19 +331,29 @@ def load_config(config_path: str | Path) -> RunConfig:
 
     output_root = _resolve_path(resolved_path, raw_config["output"]["root"])
     factor_config_directory = None
+    factor_domains = None
     factor_result_root = factor_output_root(output_root)
     if "factors" in raw_config:
         factors_config = _section(raw_config, "factors")
         _check_keys(
             factors_config,
             {"config_directory"} if run_settings["factors"] else set(),
-            {"config_directory", "result_root"},
+            {"config_directory", "domain_config", "result_root"},
             "factors",
         )
         if run_settings["factors"]:
             factor_config_directory = _resolve_path(
                 resolved_path,
                 factors_config["config_directory"],
+            )
+        if "domain_config" in factors_config:
+            domain_config_path = _resolve_path(
+                resolved_path,
+                factors_config["domain_config"],
+            )
+            factor_domains = load_domain_config(
+                domain_config_path,
+                _section(raw_config, "market_data"),
             )
         if "result_root" in factors_config:
             factor_result_root = _resolve_path(
@@ -379,6 +411,7 @@ def load_config(config_path: str | Path) -> RunConfig:
         raw=raw_config,
         output_root=output_root,
         factor_config_directory=factor_config_directory,
+        factor_domains=factor_domains,
         factor_result_root=factor_result_root,
         strategy_config_directory=strategy_config_directory,
         external_return_path=external_return_path,

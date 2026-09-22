@@ -102,6 +102,7 @@ class StrategyOutputLayoutTests(unittest.TestCase):
 
             config = SimpleNamespace(
                 output_root=output_root,
+                factor_domains=None,
                 raw={
                     "run": {
                         "factors": True,

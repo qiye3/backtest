@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from src.data.market_data import MarketData
+from src.factors.domains import parse_factor_output_name
 from src.group_return.grouping import build_group_definitions, group_cross_sections
 from src.neutralization import demean_return_cube_by_category
 
@@ -823,6 +824,7 @@ def summarize_evaluation(
     detail: pd.DataFrame,
     ic_series: pd.DataFrame,
     settings: Mapping[str, Any],
+    ic_scope: str = "full_universe",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     汇总分组收益与总体 IC 序列。
@@ -849,7 +851,7 @@ def summarize_evaluation(
             "horizon_unit": horizon_unit,
             "start": settings["start"],
             "end": settings["end"],
-            "ic_scope": "full_universe",
+            "ic_scope": ic_scope,
             "n_dates": len(observations),
             "n_complete_dates": int((observations["status"] == "complete").sum()),
         }
@@ -1026,7 +1028,13 @@ def _evaluate_factor(
     )
     for table in (detail, ic_series):
         table["target_type"] = target_type
-    summary, ic_summary = summarize_evaluation(detail, ic_series, settings)
+    _, _, domain_name = parse_factor_output_name(factor_name)
+    summary, ic_summary = summarize_evaluation(
+        detail,
+        ic_series,
+        settings,
+        ic_scope=domain_name,
+    )
     for table in (summary, ic_summary):
         table["target_type"] = target_type
     return {

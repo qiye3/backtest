@@ -8,10 +8,14 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.factors.domains import parse_factor_output_name
 from src.group_return.grouping import core_group_ids
 
 SCREENING_COLUMNS = [
     "factor_name",
+    "base_factor_name",
+    "variant",
+    "domain",
     "target_type",
     "horizon_value",
     "horizon_unit",
@@ -115,6 +119,9 @@ def _pivot_screening_summaries(
     """把评价长表转换为 daily/weekly 两张周期宽表。"""
     identity_columns = [
         "factor_name",
+        "base_factor_name",
+        "variant",
+        "domain",
         "target_type",
         "factor_coverage_rate",
         "factor_zero_rate",
@@ -196,6 +203,9 @@ def _build_horizon_record(
     ic_summary: Any,
 ) -> dict[str, Any]:
     """构造一个因子在一个未来收益周期上的完整筛选记录。"""
+    base_factor_name, variant, domain_name = parse_factor_output_name(
+        factor_name
+    )
     horizon_filter = (
         (result["ic"]["horizon_value"] == ic_summary.horizon_value)
         & (result["ic"]["horizon_unit"] == ic_summary.horizon_unit)
@@ -222,6 +232,9 @@ def _build_horizon_record(
 
     return {
         "factor_name": factor_name,
+        "base_factor_name": base_factor_name,
+        "variant": variant,
+        "domain": domain_name,
         "target_type": settings["target"]["type"],
         "horizon_value": ic_summary.horizon_value,
         "horizon_unit": ic_summary.horizon_unit,
