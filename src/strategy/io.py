@@ -37,6 +37,22 @@ def save_strategy_targets(
                 }
             )
         target_frame = target_frame.merge(diagnostics, on="date", how="left")
+        missing_diagnostics = diagnostics[
+            ~diagnostics["date"].isin(target_frame["date"])
+        ].copy()
+        if not missing_diagnostics.empty:
+            missing_diagnostics.insert(0, "target_weight", 0.0)
+            missing_diagnostics.insert(0, "stock_code", pd.NA)
+            missing_diagnostics.insert(0, "rebalance_interval", interval)
+            missing_diagnostics.insert(
+                0,
+                "rebalance_frequency",
+                result["rebalance_frequency"],
+            )
+            target_frame = pd.concat(
+                [target_frame, missing_diagnostics],
+                ignore_index=True,
+            )
         target_frames.append(target_frame)
 
     stored_targets = pd.concat(target_frames, ignore_index=True)
@@ -61,7 +77,8 @@ def load_strategy_targets(
         "rebalance_interval",
         sort=True,
     ):
-        periods[int(interval)] = interval_targets.pivot(
+        holding_targets = interval_targets[interval_targets["stock_code"].notna()]
+        periods[int(interval)] = holding_targets.pivot(
             index="date",
             columns="stock_code",
             values="target_weight",

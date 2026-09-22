@@ -108,3 +108,42 @@ def test_insufficient_candidates_use_all_and_persist_diagnostics() -> None:
     assert diagnostics["selected_count"] == 3
     assert diagnostics["status"] == "warn_and_use_all"
     warn.assert_called_once()
+
+
+def test_skipped_rebalance_date_keeps_diagnostics_without_holdings() -> None:
+    """skip_date 不应产生目标持仓，但必须保留该日诊断。"""
+    rebalance_date = pd.Timestamp("2024-03-11")
+    result = {
+        "strategy_name": "skip_demo",
+        "factor_name": "score",
+        "benchmark_index": "000906.SH",
+        "rebalance_frequency": "quarterly",
+        "periods": {
+            1: pd.DataFrame(
+                columns=["000001.SZ"],
+                index=pd.DatetimeIndex([], name="date"),
+                dtype=float,
+            )
+        },
+        "selection_diagnostics": {
+            1: pd.DataFrame(
+                {
+                    "date": [rebalance_date],
+                    "candidate_count": [3],
+                    "requested_top_n": [5],
+                    "selected_count": [0],
+                    "status": ["skipped"],
+                }
+            )
+        },
+    }
+
+    with TemporaryDirectory() as temporary_directory:
+        save_strategy_targets(result, temporary_directory)
+        restored = load_strategy_targets("skip_demo", temporary_directory)
+
+    assert restored["periods"][1].empty
+    diagnostics = restored["selection_diagnostics"][1].iloc[0]
+    assert diagnostics["date"] == rebalance_date
+    assert diagnostics["selected_count"] == 0
+    assert diagnostics["status"] == "skipped"
