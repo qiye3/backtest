@@ -72,16 +72,12 @@ class ValueFactorTests(unittest.TestCase):
         cls.temporary_directory.cleanup()
 
     def test_all_configs_run_through_framework(self) -> None:
-        """48 个唯一配置应生成 96 个 float32 变体面板。"""
+        """正式 raw 模板应生成 48 个唯一 float32 面板。"""
         factors = load_factors(VALUE_CONFIG_DIRECTORY)
         factor_names = [factor.name for factor in factors]
         self.assertEqual(len(factor_names), 48)
         self.assertEqual(len(set(factor_names)), 48)
-        expected_outputs = {
-            f"{name}__{suffix}"
-            for name in factor_names
-            for suffix in ("raw", "industry_neutral")
-        }
+        expected_outputs = {f"{name}__raw" for name in factor_names}
         self.assertEqual(set(self.factor_panels), expected_outputs)
         for factor_name, factor_panel in self.factor_panels.items():
             self.assertEqual(factor_panel.dtypes.unique().tolist(), [np.dtype("float32")])

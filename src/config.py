@@ -131,6 +131,7 @@ DEFAULT_PARQUET_RETENTION = {
     "strategy_simple_backtest": False,
     "strategy_account_backtest": False,
 }
+FACTOR_VARIANTS = {"raw", "industry_neutral"}
 DEFAULT_GROUPING = {
     "quantile_edges": DEFAULT_QUANTILE_EDGES,
     "group_aliases": DEFAULT_GROUP_ALIASES,
@@ -241,6 +242,7 @@ class RunConfig:
     output_root: Path
     factor_config_directory: Path | None
     factor_domains: DomainResearchConfig | None
+    selected_factor_variants: tuple[str, ...] | None
     factor_result_root: Path
     strategy_config_directory: Path | None
     external_return_path: Path | None
@@ -332,15 +334,25 @@ def load_config(config_path: str | Path) -> RunConfig:
     output_root = _resolve_path(resolved_path, raw_config["output"]["root"])
     factor_config_directory = None
     factor_domains = None
+    selected_factor_variants = None
     factor_result_root = factor_output_root(output_root)
     if "factors" in raw_config:
         factors_config = _section(raw_config, "factors")
         _check_keys(
             factors_config,
             {"config_directory"} if run_settings["factors"] else set(),
-            {"config_directory", "domain_config", "result_root"},
+            {
+                "config_directory",
+                "domain_config",
+                "result_root",
+                "selected_variants",
+            },
             "factors",
         )
+        if "selected_variants" in factors_config:
+            selected_factor_variants = _validate_factor_variants(
+                factors_config["selected_variants"]
+            )
         if run_settings["factors"]:
             factor_config_directory = _resolve_path(
                 resolved_path,
@@ -355,6 +367,10 @@ def load_config(config_path: str | Path) -> RunConfig:
                 domain_config_path,
                 _section(raw_config, "market_data"),
             )
+            if selected_factor_variants != ("raw",):
+                raise ValueError(
+                    "factors.domain_config 要求 selected_variants 只选择 raw"
+                )
         if "result_root" in factors_config:
             factor_result_root = _resolve_path(
                 resolved_path,
@@ -412,10 +428,26 @@ def load_config(config_path: str | Path) -> RunConfig:
         output_root=output_root,
         factor_config_directory=factor_config_directory,
         factor_domains=factor_domains,
+        selected_factor_variants=selected_factor_variants,
         factor_result_root=factor_result_root,
         strategy_config_directory=strategy_config_directory,
         external_return_path=external_return_path,
     )
+
+
+def _validate_factor_variants(configured_variants: Any) -> tuple[str, ...]:
+    """校验本次实验需要计算的因子 variant。"""
+    if not isinstance(configured_variants, list) or not configured_variants:
+        raise ValueError("factors.selected_variants 必须是非空列表")
+    if len(configured_variants) != len(set(configured_variants)):
+        raise ValueError("factors.selected_variants 不能重复")
+    invalid_variants = set(configured_variants) - FACTOR_VARIANTS
+    if invalid_variants:
+        raise ValueError(
+            "factors.selected_variants 只支持 raw 和 industry_neutral: "
+            f"{sorted(invalid_variants)}"
+        )
+    return tuple(configured_variants)
 
 
 def _complete_strategy_market_data_sources(

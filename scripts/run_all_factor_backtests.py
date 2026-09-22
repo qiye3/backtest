@@ -1,4 +1,4 @@
-"""共享一次市场缓存，依次运行五组正式因子实验。"""
+"""共享一次市场数据，依次运行五组 raw 与行业中性因子实验。"""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ GROUPS = (
     "first_batch",
     "second_batch",
 )
+VARIANTS = ("raw", "industry_neutral")
 
 
 def _absolute_path(value: str) -> Path:
@@ -56,29 +57,35 @@ def _build_configs(arguments: argparse.Namespace) -> dict[str, dict[str, Any]]:
         template = group_root / "run_config.example.yaml"
         if not template.is_file() or not (group_root / "config").is_dir():
             raise FileNotFoundError(f"因子包缺少正式模板或配置目录: {group_root}")
-        config = yaml.safe_load(template.read_text(encoding="utf-8"))
-        config["factors"]["config_directory"] = str(group_root / "config")
-        config["output"]["root"] = str(arguments.output_root / group)
-        config["market_data"]["source_root"] = str(arguments.data_root)
-        config["market_data"]["cache_root"] = str(
-            arguments.output_root / ".cache" / "market_data"
-        )
-        config["run"].update(
-            {
-                "refresh_market_data": False,
-                "group_return": True,
-                "simple_backtest": False,
-                "account_backtest": False,
-                "plotter": False,
-                "overall_evaluation": True,
-            }
-        )
-        distribution_grid = config["plots"]["overall"][
-            "factor_distribution_grid"
-        ]
-        distribution_grid["enabled"] = True
-        config["plots"]["overall"]["group_return_grid"]["enabled"] = True
-        configs[group] = config
+        template_config = yaml.safe_load(template.read_text(encoding="utf-8"))
+        for variant in VARIANTS:
+            experiment_name = f"{group}_{variant}"
+            config = deepcopy(template_config)
+            config["factors"]["config_directory"] = str(group_root / "config")
+            config["factors"]["selected_variants"] = [variant]
+            config["output"]["root"] = str(
+                arguments.output_root / experiment_name
+            )
+            config["market_data"]["source_root"] = str(arguments.data_root)
+            config["market_data"]["cache_root"] = str(
+                arguments.output_root / ".cache" / "market_data"
+            )
+            config["run"].update(
+                {
+                    "refresh_market_data": False,
+                    "group_return": True,
+                    "simple_backtest": False,
+                    "account_backtest": False,
+                    "plotter": False,
+                    "overall_evaluation": True,
+                }
+            )
+            distribution_grid = config["plots"]["overall"][
+                "factor_distribution_grid"
+            ]
+            distribution_grid["enabled"] = True
+            config["plots"]["overall"]["group_return_grid"]["enabled"] = True
+            configs[experiment_name] = config
     return configs
 
 
@@ -138,7 +145,7 @@ def _shared_market_config(
 
 
 def main() -> None:
-    """校验输入、只刷新一次共享缓存，再按固定顺序运行五组实验。"""
+    """校验输入、构造一次市场数据，再按固定顺序运行十个实验。"""
     arguments = _arguments()
     if not arguments.dry_run and not arguments.foreground:
         launch_in_tmux(arguments.output_root, "factor_backtest")
@@ -162,29 +169,35 @@ def main() -> None:
         encoding="utf-8",
     )
     run_configs = {}
-    for group, config in configs.items():
-        config_path = config_root / f"{group}.yaml"
+    for experiment_name, config in configs.items():
+        config_path = config_root / f"{experiment_name}.yaml"
         config_path.write_text(
             yaml.safe_dump(config, allow_unicode=True, sort_keys=False),
             encoding="utf-8",
         )
-        run_configs[group] = load_config(config_path)
-        factors = load_factors(run_configs[group].factor_config_directory)
+        run_configs[experiment_name] = load_config(config_path)
+        factors = load_factors(
+            run_configs[experiment_name].factor_config_directory
+        )
         print(
-            f"[{group}] loaded_factors={len(factors)} "
-            f"directory={run_configs[group].factor_config_directory}"
+            f"[{experiment_name}] loaded_factors={len(factors)} "
+            f"directory={run_configs[experiment_name].factor_config_directory}"
         )
     if arguments.dry_run:
-        print("[dry-run] 五组配置、动态导入、行业数据和共享缓存配置校验通过。")
+        print("[dry-run] 十组配置、动态导入、行业数据和共享缓存配置校验通过。")
         return
 
     from src.cli import run
     from src.data.market_data import MarketData
 
-    MarketData.from_yaml(market_path, refresh=True)
-    for group in GROUPS:
-        print(f"[{group}] 开始实验", flush=True)
-        run(run_configs[group], show_progress=True)
+    shared_market_data = MarketData.from_yaml(market_path, refresh=True)
+    for experiment_name, run_config in run_configs.items():
+        print(f"[{experiment_name}] 开始实验", flush=True)
+        run(
+            run_config,
+            show_progress=True,
+            market_data=shared_market_data,
+        )
 
 
 if __name__ == "__main__":

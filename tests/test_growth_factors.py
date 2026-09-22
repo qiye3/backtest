@@ -86,16 +86,12 @@ class GrowthFactorTests(unittest.TestCase):
         cls.temporary_directory.cleanup()
 
     def test_all_factor_configs_run_through_framework(self) -> None:
-        """47份配置应生成94个标准变体面板。"""
+        """正式 raw 模板应为 47 份配置各生成一个面板。"""
         loaded_factors = load_factors(GROWTH_CONFIG_DIRECTORY)
         factor_names = [factor.name for factor in loaded_factors]
         self.assertEqual(len(factor_names), 47)
         self.assertEqual(len(set(factor_names)), 47)
-        expected_outputs = {
-            f"{name}__{suffix}"
-            for name in factor_names
-            for suffix in ("raw", "industry_neutral")
-        }
+        expected_outputs = {f"{name}__raw" for name in factor_names}
         self.assertEqual(set(self.factor_panels), expected_outputs)
         for factor_name, factor_panel in self.factor_panels.items():
             self.assertEqual(factor_panel.dtypes.unique().tolist(), [np.dtype("float32")])

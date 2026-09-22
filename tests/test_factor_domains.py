@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from src.cli import _factor_output_sort_key
 from src.data.market_data import MarketData
 from src.factors import Factor, calc_factors
 from src.factors.domains import (
@@ -248,3 +249,70 @@ def test_factor_output_identity_uses_sibling_domain_variant() -> None:
         "domain_csi800",
         "csi800",
     )
+
+
+def test_selected_variant_avoids_unrequested_neutralization() -> None:
+    """raw 实验只应产出 raw 与 domains，不计算行业中性结果。"""
+    market_data = _market_data()
+    values = pd.DataFrame(
+        np.arange(12, dtype=float).reshape(3, 4),
+        index=market_data.calendar,
+        columns=market_data.membership.columns,
+    )
+    factor = _CountingFactor(
+        {
+            "name": "factor_a",
+            "postprocess": {"cross_section": {"method": "rank"}},
+            "variants": [
+                {
+                    "suffix": "raw",
+                    "neutralization": {"method": "none"},
+                },
+                {
+                    "suffix": "industry_neutral",
+                    "neutralization": {
+                        "method": "industry_demean",
+                        "source": "industry_history",
+                        "field": "ind_class_code",
+                    },
+                },
+            ],
+        },
+        values,
+    )
+    masks = build_domain_masks(_load_test_domains(), market_data)
+
+    panels = calc_factors(
+        [factor],
+        market_data,
+        domain_masks=masks,
+        domain_factor_names=["factor_a"],
+        selected_variants=["raw"],
+    )
+
+    assert list(panels) == [
+        "factor_a__raw",
+        "factor_a__domain_csi800",
+        "factor_a__domain_bank",
+        "factor_a__domain_large_half",
+    ]
+    assert factor.call_count == 1
+
+
+def test_factor_output_order_is_stable_for_domain_research() -> None:
+    """基础因子按字母排序，同一因子内 raw 在字母序 domains 之前。"""
+    unordered_names = [
+        "beta__domain_small",
+        "alpha__domain_value",
+        "alpha__raw",
+        "beta__raw",
+        "alpha__domain_large",
+    ]
+
+    assert sorted(unordered_names, key=_factor_output_sort_key) == [
+        "alpha__raw",
+        "alpha__domain_large",
+        "alpha__domain_value",
+        "beta__raw",
+        "beta__domain_small",
+    ]

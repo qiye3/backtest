@@ -28,7 +28,7 @@ from src.data.market_data import MarketData
 from src.data.return_data import load_return_panel
 from src.data.style_exposure import load_or_build_style_exposures
 from src.factors import iter_factor_panels, load_factors
-from src.factors.domains import build_domain_masks
+from src.factors.domains import build_domain_masks, parse_factor_output_name
 from src.factors.io import (
     FACTOR_FILE_NAME,
     find_factor_names,
@@ -520,10 +520,30 @@ def _calculate_factor_checkpoint(
         max_workers=config.raw["run"]["max_workers"],
         domain_masks=domain_masks,
         domain_factor_names=domain_factor_names,
+        selected_variants=config.selected_factor_variants,
     ):
         save_factor_panels({factor_name: factor_panel}, cache_root)
         output_names.append(factor_name)
-    return tuple(output_names)
+    return tuple(sorted(output_names, key=_factor_output_sort_key))
+
+
+def _factor_output_sort_key(factor_name: str) -> tuple[str, int, str, str]:
+    """按基础因子、raw 优先和域名称排列实验输出。"""
+    base_factor_name, variant_name, domain_name = parse_factor_output_name(
+        factor_name
+    )
+    if variant_name == "raw":
+        variant_priority = 0
+    elif variant_name.startswith("domain_"):
+        variant_priority = 1
+    else:
+        variant_priority = 2
+    return (
+        base_factor_name.casefold(),
+        variant_priority,
+        domain_name.casefold(),
+        factor_name.casefold(),
+    )
 
 
 def _calculate_group_return_checkpoint(
@@ -1149,9 +1169,10 @@ def _run_overall_evaluation(
     cache_root: Path,
 ) -> None:
     """只为整体评价同时加载因子与评价结果，并输出到 checkpoint。"""
+    ordered_factor_names = sorted(factor_names, key=_factor_output_sort_key)
     factor_panels = {
         factor_name: load_factor_panel(factor_name, factor_source)
-        for factor_name in factor_names
+        for factor_name in ordered_factor_names
     }
     evaluation_results = load_evaluation_results(
         factor_panels,

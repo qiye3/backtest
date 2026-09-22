@@ -50,6 +50,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.assertTrue(run_settings["factors"])
             self.assertTrue(run_settings["group_return"])
             self.assertTrue(run_settings["overall_evaluation"])
+            self.assertEqual(
+                config["factors"]["selected_variants"],
+                ["raw"],
+            )
             self.assertFalse(run_settings["simple_backtest"])
             self.assertFalse(run_settings["account_backtest"])
             self.assertFalse(run_settings["plotter"])
@@ -74,12 +78,25 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
             configs = factor_runner._build_configs(arguments)
 
-        self.assertEqual(tuple(configs), factor_runner.GROUPS)
-        for config in configs.values():
+        experiment_variants = {
+            f"{group_name}_{variant_name}": variant_name
+            for group_name in factor_runner.GROUPS
+            for variant_name in factor_runner.VARIANTS
+        }
+        self.assertEqual(tuple(configs), tuple(experiment_variants))
+        for experiment_name, config in configs.items():
             self.assertFalse(config["run"]["simple_backtest"])
             self.assertFalse(config["run"]["account_backtest"])
             self.assertFalse(config["run"]["plotter"])
             self.assertTrue(config["run"]["overall_evaluation"])
+            self.assertEqual(
+                config["factors"]["selected_variants"],
+                [experiment_variants[experiment_name]],
+            )
+            self.assertEqual(
+                Path(config["output"]["root"]).name,
+                experiment_name,
+            )
 
     def test_strategy_runner_keeps_only_strategy_figures_enabled(self) -> None:
         """指数增强配置应运行 simple 回测且不绘制内部因子图。"""

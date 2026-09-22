@@ -12,6 +12,8 @@ run:
   overall_evaluation: true
 factors:
   config_directory: config
+  selected_variants:
+    - raw
 output:
   root: ../../outputs_value
   save_backtest_details: false

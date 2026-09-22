@@ -48,23 +48,6 @@ def _factor_config_paths(config_directory: Path) -> dict[str, Path]:
     return factor_paths
 
 
-def _raw_factor_config(config_path: Path) -> dict[str, Any]:
-    """保留基础公式、截面处理和 raw variant，供域间直接比较。"""
-    factor_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    if "variants" not in factor_config:
-        return factor_config
-
-    raw_variants = [
-        variant
-        for variant in factor_config["variants"]
-        if variant["neutralization"]["method"] == "none"
-    ]
-    if len(raw_variants) != 1:
-        raise ValueError(f"域研究要求唯一 raw variant: {factor_config['name']}")
-    factor_config["variants"] = raw_variants
-    return factor_config
-
-
 def _resolve_config_path(config_path: Path, configured_path: str) -> Path:
     """按原主配置位置解析需要写入派生配置的外部路径。"""
     resolved_path = Path(configured_path).expanduser()
@@ -96,14 +79,7 @@ def _materialize_factor_runs(base_config: RunConfig) -> list[Path]:
         factor_config_directory = factor_run_root / "factors"
         factor_config_directory.mkdir(parents=True, exist_ok=True)
         factor_config_path = factor_config_directory / factor_paths[factor_name].name
-        factor_config_path.write_text(
-            yaml.safe_dump(
-                _raw_factor_config(factor_paths[factor_name]),
-                allow_unicode=True,
-                sort_keys=False,
-            ),
-            encoding="utf-8",
-        )
+        shutil.copy2(factor_paths[factor_name], factor_config_path)
 
         domain_config = {
             "factor_names": [factor_name],
@@ -162,6 +138,7 @@ def _single_factor_run_config(
     run_config["factors"] = {
         "config_directory": str(factor_config_directory),
         "domain_config": str(domain_config_path),
+        "selected_variants": ["raw"],
     }
     run_config["output"]["root"] = str(base_config.output_root / factor_name)
 

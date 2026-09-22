@@ -105,8 +105,10 @@ def test_materialized_runs_only_include_selected_factor_and_raw_variant() -> Non
         assert run_paths[0].parent.name == "factor_a"
         assert generated_factor["name"] == "factor_a"
         assert [variant["suffix"] for variant in generated_factor["variants"]] == [
-            "raw"
+            "raw",
+            "industry_neutral",
         ]
+        assert generated_run["factors"]["selected_variants"] == ["raw"]
         assert generated_run["output"]["root"].endswith("/outputs/factor_a")
         assert generated_run["plots"]["overall"]["group_return_grid"]["enabled"]
 
