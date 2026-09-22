@@ -17,6 +17,7 @@ import pandas as pd
 from src.data.market_data import MarketData
 from src.factors.base import Factor
 from src.factors.utils import align_factor_values
+from src.neutralization import demean_by_category, transform_cross_sections
 
 
 # 按输入顺序串行或线程并行计算多个因子面板。
@@ -47,10 +48,20 @@ def calc_factors(
             max_workers=max_workers,
         )
     )
-    return {
-        factor.name: completed_panels[factor.name]
+    ordered_names = [
+        output_name
         for factor in factors
-    }
+        for output_name in _factor_output_names(factor)
+    ]
+    return {name: completed_panels[name] for name in ordered_names}
+
+
+def _factor_output_names(factor: Factor) -> list[str]:
+    """返回单个 YAML 按配置顺序产生的稳定输出名称。"""
+    variants = factor.config.get("variants")
+    if variants is None:
+        return [factor.name]
+    return [f"{factor.name}__{variant['suffix']}" for variant in variants]
 
 
 def iter_factor_panels(
@@ -61,7 +72,7 @@ def iter_factor_panels(
     """按完成顺序产出因子面板，并将同时驻留的结果限制在线程数以内。"""
     if max_workers == 1:
         for factor in factors:
-            yield _calc_factor_panel(factor, market_data)
+            yield from _calc_factor_panels(factor, market_data)
         return
 
     factor_iterator = iter(factors)
@@ -72,7 +83,7 @@ def iter_factor_panels(
             if factor is None:
                 break
             pending_futures[
-                executor.submit(_calc_factor_panel, factor, market_data)
+                executor.submit(_calc_factor_panels, factor, market_data)
             ] = factor
 
         while pending_futures:
@@ -82,24 +93,24 @@ def iter_factor_panels(
             )
             for completed_future in completed_futures:
                 pending_futures.pop(completed_future)
-                factor_result = completed_future.result()
+                factor_results = completed_future.result()
                 next_factor = next(factor_iterator, None)
                 if next_factor is not None:
                     pending_futures[
                         executor.submit(
-                            _calc_factor_panel,
+                            _calc_factor_panels,
                             next_factor,
                             market_data,
                         )
                     ] = next_factor
-                yield factor_result
+                yield from factor_results
 
 
 # 计算单个因子并套用统一的日期、股票和成员口径。
-def _calc_factor_panel(
+def _calc_factor_panels(
     factor: Factor,
     market_data: MarketData,
-) -> tuple[str, pd.DataFrame]:
+) -> list[tuple[str, pd.DataFrame]]:
     """
     执行一个批量计算任务。
 
@@ -120,4 +131,36 @@ def _calc_factor_panel(
         trading_calendar=market_data.calendar,
         membership=market_data.membership,
     )
-    return factor.name, aligned_values
+    postprocess = factor.config.get("postprocess", {}).get("cross_section")
+    variants = factor.config.get("variants")
+    if postprocess is None and variants is None:
+        return [(factor.name, aligned_values)]
+    if postprocess is None or not variants:
+        raise ValueError(f"{factor.name} 必须同时配置 postprocess 和 variants")
+
+    transformed = transform_cross_sections(aligned_values, **postprocess)
+    industry_panel = None
+    output = []
+    for variant in variants:
+        suffix = variant["suffix"]
+        neutralization = variant["neutralization"]
+        method = neutralization["method"]
+        if method == "none":
+            variant_values = transformed.copy()
+        elif method == "industry_demean":
+            if industry_panel is None:
+                industry_panel = market_data.get_panel(
+                    neutralization["source"],
+                    neutralization["field"],
+                )
+            variant_values = demean_by_category(
+                transformed,
+                industry_panel,
+                market_data.membership,
+            )
+        else:
+            raise ValueError(f"不支持的因子中性化方法: {method}")
+        output.append(
+            (f"{factor.name}__{suffix}", variant_values.astype("float32"))
+        )
+    return output

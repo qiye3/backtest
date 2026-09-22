@@ -1,0 +1,8 @@
+name: volume_ratio_10d_60d
+implementation:
+  module: src.factors.PriceVolumeFactor
+  class: PriceVolumeFactor
+params:
+  formula: volume_ratio
+  short_window: 10
+  long_window: 60

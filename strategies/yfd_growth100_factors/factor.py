@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from pandas.api.indexers import VariableOffsetWindowIndexer
 
 from src.data.market_data import MarketData
 from src.factors.base import Factor
 
-LIQUIDITY_WINDOW = 126
+LOOKBACK_MONTHS = 6
 # S_VAL_MV 的单位是万元，50 亿元对应 500,000 万元。
 MINIMUM_MARKET_VALUE = 500_000
 
@@ -43,14 +44,8 @@ class CniGrowth100Factor(Factor):
         )
 
         listed_long_enough = _listed_long_enough(listing_dates)
-        amount_mean = amount.rolling(
-            LIQUIDITY_WINDOW,
-            min_periods=LIQUIDITY_WINDOW,
-        ).mean()
-        market_value_mean = market_value.rolling(
-            LIQUIDITY_WINDOW,
-            min_periods=LIQUIDITY_WINDOW,
-        ).mean()
+        amount_mean = _six_calendar_month_mean(amount)
+        market_value_mean = _six_calendar_month_mean(market_value)
         liquid_universe = amount_mean.where(
             membership & listed_long_enough
         ).rank(axis=1, pct=True).gt(0.2)
@@ -131,6 +126,19 @@ class CniGrowth100Factor(Factor):
         )
         rank_sum = sum(component_ranks)
         return (-rank_sum).where(complete_components)
+
+
+def _six_calendar_month_mean(daily_values: pd.DataFrame) -> pd.DataFrame:
+    """按包含首尾边界的六个自然月区间计算日均值。"""
+    window = VariableOffsetWindowIndexer(
+        index=daily_values.index,
+        offset=pd.DateOffset(months=LOOKBACK_MONTHS),
+    )
+    return daily_values.rolling(
+        window=window,
+        min_periods=1,
+        closed="both",
+    ).mean()
 
 
 def _listed_long_enough(listing_dates: pd.DataFrame) -> pd.DataFrame:

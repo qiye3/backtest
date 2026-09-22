@@ -1,4 +1,4 @@
-"""共享一次市场缓存，依次运行 Growth、Quality、Value 三组正式因子。"""
+"""共享一次市场缓存，依次运行五组正式因子实验。"""
 
 from __future__ import annotations
 
@@ -9,10 +9,17 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from tmux_runner import launch_in_tmux
 
 SCRIPT_ROOT = Path(__file__).resolve().parents[1]
 FRAMEWORK_ROOT = SCRIPT_ROOT / "code" if (SCRIPT_ROOT / "code").is_dir() else SCRIPT_ROOT
-GROUPS = ("growth", "quality", "value")
+GROUPS = (
+    "growth",
+    "quality",
+    "value",
+    "first_batch",
+    "second_batch",
+)
 
 
 def _absolute_path(value: str) -> Path:
@@ -28,6 +35,11 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--data-root", required=True, type=_absolute_path)
     parser.add_argument("--output-root", required=True, type=_absolute_path)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--foreground",
+        action="store_true",
+        help="不使用 tmux，在当前终端运行正式任务。",
+    )
     return parser.parse_args()
 
 
@@ -54,13 +66,18 @@ def _build_configs(arguments: argparse.Namespace) -> dict[str, dict[str, Any]]:
         config["run"].update(
             {
                 "refresh_market_data": False,
-                "simple_backtest": True,
+                "group_return": True,
+                "simple_backtest": False,
                 "account_backtest": False,
-                "plotter": True,
+                "plotter": False,
+                "overall_evaluation": True,
             }
         )
-        config["simple_backtest"]["insufficient_stocks_policy"] = "cash"
-        config["plots"]["simple"]["enabled"] = True
+        distribution_grid = config["plots"]["overall"][
+            "factor_distribution_grid"
+        ]
+        distribution_grid["enabled"] = True
+        config["plots"]["overall"]["group_return_grid"]["enabled"] = True
         configs[group] = config
     return configs
 
@@ -92,7 +109,7 @@ def _merge_source(target: dict[str, Any], incoming: dict[str, Any]) -> None:
     semantic_keys = (target.keys() | incoming.keys()) - collection_keys
     conflicts = [key for key in semantic_keys if target.get(key) != incoming.get(key)]
     if conflicts:
-        raise ValueError(f"三组来源口径不一致: {', '.join(sorted(conflicts))}")
+        raise ValueError(f"五组来源口径不一致: {', '.join(sorted(conflicts))}")
     for key in collection_keys:
         if key in target or key in incoming:
             target[key] = list(
@@ -121,8 +138,12 @@ def _shared_market_config(
 
 
 def main() -> None:
-    """校验输入、只刷新一次共享缓存，再按固定顺序运行三组实验。"""
+    """校验输入、只刷新一次共享缓存，再按固定顺序运行五组实验。"""
     arguments = _arguments()
+    if not arguments.dry_run and not arguments.foreground:
+        launch_in_tmux(arguments.output_root, "factor_backtest")
+        return
+
     configs = _build_configs(arguments)
     _validate_inputs(arguments.data_root, configs)
     _enable_imports(arguments.factors_root)
@@ -154,7 +175,7 @@ def main() -> None:
             f"directory={run_configs[group].factor_config_directory}"
         )
     if arguments.dry_run:
-        print("[dry-run] 三组配置、动态导入、行业数据和共享缓存配置校验通过。")
+        print("[dry-run] 五组配置、动态导入、行业数据和共享缓存配置校验通过。")
         return
 
     from src.cli import run

@@ -27,8 +27,8 @@ class CniGrowth100Portfolio(PortfolioRule):
             columns=market_data.membership.columns,
         )
         free_shares = market_data.get_panel(
-            "free_float",
-            "S_SHARE_FREESHARES",
+            "stock_valuation",
+            "FREE_SHARES_TODAY",
         ).reindex(index=rebalance_dates, columns=signals.columns)
         close_prices = market_data.get_panel(
             "stock_quote",
@@ -39,10 +39,13 @@ class CniGrowth100Portfolio(PortfolioRule):
         target_rows = []
         previous_members = pd.Index([], dtype=object)
         for rebalance_date in rebalance_dates:
-            current_signals = signals.loc[rebalance_date].dropna()
+            valid_market_values = free_float_market_value.loc[rebalance_date].gt(0)
+            current_signals = signals.loc[rebalance_date].where(
+                valid_market_values
+            ).dropna()
             if len(current_signals) < top_n:
                 raise ValueError(
-                    f"{rebalance_date.date()} 成长100有效股票不足 {top_n} 只"
+                    f"{rebalance_date.date()} 成长100可选股票不足 {top_n} 只"
                 )
             natural_members = current_signals.nlargest(top_n).index
             selected_members = _limit_replacements(

@@ -19,6 +19,7 @@ import pandas as pd
 
 from src.data.market_data import MarketData
 from src.group_return.grouping import build_group_definitions, group_cross_sections
+from src.neutralization import demean_return_cube_by_category
 
 WEEKDAY_NUMBER = {
     "MON": 0,
@@ -50,6 +51,7 @@ class _EvaluationContext:
     price_filled: pd.DataFrame | None
     external_future_returns: np.ndarray | None
     benchmark_returns: np.ndarray | None
+    target_stock_returns: Mapping[str, np.ndarray]
 
 
 @dataclass(frozen=True)
@@ -487,7 +489,10 @@ def _prepare_context(
 
     target_settings = settings["target"]
     benchmark_returns = None
-    if target_settings["type"] == "benchmark_excess_return":
+    if target_settings["type"] in {
+        "benchmark_excess_return",
+        "factor_variant_excess_return",
+    }:
         benchmark_returns = _benchmark_horizon_returns(
             market_data=market_data,
             benchmark_source=target_settings["benchmark_source"],
@@ -495,6 +500,37 @@ def _prepare_context(
             return_end_positions=return_end_positions,
             horizon_complete=horizon_complete,
         )
+    safe_end_positions = np.clip(return_end_positions, 0, len(calendar) - 1)
+    if external_future_returns is not None:
+        raw_future_returns = external_future_returns
+    else:
+        reference_array = reference_prices.to_numpy(dtype=float)
+        raw_future_returns = (
+            reference_array[safe_end_positions]
+            / reference_array[sample_positions][None, :, :]
+            - 1.0
+        )
+
+    target_stock_returns: dict[str, np.ndarray] = {
+        "stock_return": raw_future_returns,
+    }
+    if benchmark_returns is not None:
+        # 分组超额收益在组合收益聚合完成后扣减基准；IC 使用原始收益等价。
+        target_stock_returns["benchmark_excess_return"] = raw_future_returns
+    if target_settings["type"] == "factor_variant_excess_return":
+        industry_panel = market_data.get_panel(
+            target_settings["industry_source"],
+            target_settings["industry_field"],
+        ).reindex(index=sample_dates, columns=stock_codes)
+        industry_neutral_returns = demean_return_cube_by_category(
+            raw_future_returns,
+            industry_panel,
+            membership,
+        )
+        target_stock_returns[
+            "industry_neutral_benchmark_excess_return"
+        ] = industry_neutral_returns
+
     group_definitions = build_group_definitions(
         settings["grouping"]["quantile_edges"],
         settings["grouping"]["group_aliases"],
@@ -517,6 +553,7 @@ def _prepare_context(
         price_filled=price_filled,
         external_future_returns=external_future_returns,
         benchmark_returns=benchmark_returns,
+        target_stock_returns=target_stock_returns,
     )
 
 
@@ -602,6 +639,7 @@ def _prepare_future_return_matrices(
     factor_array: np.ndarray,
     enough_stocks: np.ndarray,
     context: _EvaluationContext,
+    target_type: str,
 ) -> _FutureReturnMatrices:
     """
     准备一个 Factor 的未来收益矩阵。
@@ -633,14 +671,14 @@ def _prepare_future_return_matrices(
         start_price_filled = price_filled[context.sample_positions]
         end_prices = reference_prices[safe_end_positions]
         end_price_filled = price_filled[safe_end_positions]
-        source_returns = end_prices / start_prices[None, :, :] - 1.0
+        source_returns = context.target_stock_returns[target_type]
         missing_required_values = required_prices & (
             ~np.isfinite(start_prices[None, :, :]) | ~np.isfinite(end_prices)
         )
         combined_price_filled = start_price_filled[None, :, :] | end_price_filled
         missing_label = "未来收益缺少参考价格"
     else:
-        source_returns = context.external_future_returns
+        source_returns = context.target_stock_returns[target_type]
         missing_required_values = required_prices & ~np.isfinite(source_returns)
         combined_price_filled = np.zeros_like(required_prices, dtype=bool)
         missing_label = "未来收益缺少外部日收益"
@@ -863,6 +901,7 @@ def summarize_evaluation(
 
 # 计算单个 Factor 的全部未来周期评价表。
 def _evaluate_factor(
+    factor_name: str,
     factor_panel: pd.DataFrame,
     context: _EvaluationContext,
     settings: Mapping[str, Any],
@@ -918,10 +957,12 @@ def _evaluate_factor(
         base_weights = context.weight_values.to_numpy(dtype=float)
     base_weights = np.where(group_membership.any(axis=0), base_weights, 0.0)
 
+    target_type = _target_type_for_factor(factor_name, settings["target"])
     future_matrices = _prepare_future_return_matrices(
         factor_array=factor_array,
         enough_stocks=enough_stocks,
         context=context,
+        target_type=target_type,
     )
 
     horizon_count = len(context.horizon_values)
@@ -983,7 +1024,11 @@ def _evaluate_factor(
         rank_ic_values=rank_ic_values,
         ic_status=ic_status,
     )
+    for table in (detail, ic_series):
+        table["target_type"] = target_type
     summary, ic_summary = summarize_evaluation(detail, ic_series, settings)
+    for table in (summary, ic_summary):
+        table["target_type"] = target_type
     return {
         "definitions": context.group_definitions.copy(),
         "detail": detail,
@@ -996,6 +1041,20 @@ def _evaluate_factor(
         ),
         "sample_dates": context.sample_dates,
     }
+
+
+def _target_type_for_factor(
+    factor_name: str,
+    target_settings: Mapping[str, Any],
+) -> str:
+    """按因子变体选择原始或行业中性超额收益目标。"""
+    configured_type = target_settings["type"]
+    if configured_type != "factor_variant_excess_return":
+        return configured_type
+    neutral_suffix = target_settings["industry_neutral_suffix"]
+    if factor_name.endswith(neutral_suffix):
+        return "industry_neutral_benchmark_excess_return"
+    return "benchmark_excess_return"
 
 
 def _summarize_factor_quality(
@@ -1147,7 +1206,7 @@ def evaluate(
     - 为单因子调用准备一次市场上下文并执行完整评价。
     """
     context = _prepare_context(market_data, settings, return_panel)
-    return _evaluate_factor(factor_panel, context, settings)
+    return _evaluate_factor("factor", factor_panel, context, settings)
 
 
 # 共享市场上下文并在线程池中并行评价多个 Factor。
@@ -1213,7 +1272,7 @@ def iter_factor_evaluations(
             yield (
                 factor_name,
                 factor_panel,
-                _evaluate_factor(factor_panel, context, settings),
+                _evaluate_factor(factor_name, factor_panel, context, settings),
             )
         return
 
@@ -1228,6 +1287,7 @@ def iter_factor_evaluations(
             pending_futures[
                 executor.submit(
                     _evaluate_factor,
+                    factor_name,
                     factor_panel,
                     context,
                     settings,
@@ -1248,6 +1308,7 @@ def iter_factor_evaluations(
                     pending_futures[
                         executor.submit(
                             _evaluate_factor,
+                            next_factor_name,
                             next_factor_panel,
                             context,
                             settings,

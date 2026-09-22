@@ -1,0 +1,26 @@
+name: pb_roe_composite
+implementation:
+  module: factors.quality_factors.code.QualityFactor
+  class: QualityFactor
+params:
+  base_factor: pb_roe_composite
+  operator: raw
+  rolling_mean_window: 1
+  min_periods: 1
+  neutralize: false
+  winsorize:
+    min_quantile: 0.0
+    max_quantile: 1.0
+  reverse: false
+postprocess:
+  cross_section:
+    method: rank
+variants:
+- suffix: raw
+  neutralization:
+    method: none
+- suffix: industry_neutral
+  neutralization:
+    method: industry_demean
+    source: industry_history
+    field: ind_class_code

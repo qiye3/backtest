@@ -12,52 +12,85 @@ group return、simple backtest、account backtest 和 plotter；是否执行每�
 python -m pip install .
 ```
 
-## 运行内置示例
+## 准备 Wind 正式数据
 
-`configs/base_config.yaml` 使用仓库中的 synthetic 数据，可直接验证完整链路：
+原始 Wind Parquet 先整理成框架原生的年度 CSV 和指数成员目录：
+
+```bash
+python -m scripts.prepare_wind_formal_data \
+  --wind-cache-root /Users/qiye/Desktop/wind_cache \
+  --output-root /Users/qiye/Desktop/wind_cache/formal_factor_backtest \
+  --start 2024-01-02 \
+  --end 2026-09-09
+```
+
+整理后的目录完全遵循 `src.data.load_data` 的正式输入契约：
+
+```text
+formal_factor_backtest/
+├── data_quality.json
+├── index/
+│   ├── members/{000906.SH,000852.SH}.csv
+│   └── prices/000906.SH_YYYY.csv
+└── stock/daily_quote/quote_YYYY.csv
+```
+
+当前源数据只提供 2026-09-08 成份快照，因此成员 CSV 明确使用静态股票池，历史结果
+存在生存者偏差；详细口径记录在整理目录的 `data_quality.json`。
+
+### 同步历史指数成份
+
+`scripts.sync_index_members` 把成份数据源与正式回测文件解耦。真实数据根遵循参考数据
+字典的 `index/members/<code>.csv` 布局；同步后统一校验日期、重复和重叠区间，并输出
+正式五字段成员文件：
+
+```bash
+python -m scripts.sync_index_members \
+  --source filesystem \
+  --source-root /path/to/【指数增强策略】数据获取/data \
+  --output-root /Users/qiye/Desktop/wind_cache/formal_factor_backtest \
+  --index-code 000906.SH \
+  --index-code 000852.SH
+```
+
+本机没有外部数据根时，可用 deterministic synthetic 后端验证接口和 PIT 展开链路：
+
+```bash
+python -m scripts.sync_index_members \
+  --source synthetic \
+  --output-root /Users/qiye/Desktop/wind_cache/synthetic_index_members_formal \
+  --index-code 000906.SH \
+  --index-code 000852.SH \
+  --start 2010-01-01 \
+  --end 2026-09-09
+```
+
+synthetic 文件包含定期调入和调出区间，只用于接口、PIT 股票池和自动化测试，不能
+替代真实历史成份数据得出研究结论。未来接入 taidb 时实现同一个
+`IndexMemberSource.read()` 合同即可，正式框架无需修改。
+
+## 运行正式框架链路
+
+`configs/base_config.yaml` 已指向整理后的 Wind 数据。因子计算、分组收益、IC、两类
+回测和绘图全部由正式 CLI 编排：
 
 ```bash
 python -m src.cli --config configs/base_config.yaml
 ```
 
-输出位于 `outputs/<factor_name>/`。每个因子固定保存四个结果文件：
+正式结果按用途分开保存：
 
 ```text
-factor.parquet
-group_return.parquet
-simple_backtest.parquet
-account_backtest.parquet
+outputs_wind/
+├── config_snapshot.yaml
+├── factors/<factor_name>/
+├── strategies/<strategy_name>/
+└── summaries/
 ```
 
-图像保存在同一因子目录的 `figures/`。回测结果默认只保存分组定义和汇总指标，
-不保存回测曲线、调仓动作、逐股成交和换手明细，从而避免明细文件占用大量空间。
-重复运行会覆盖同名结果，不产生带时间戳的新缓存。
-
-如需在后续运行中恢复完整回测结果，将主配置中的开关设为：
-
-```yaml
-output:
-  save_backtest_details: true
-```
-
-设为 `false` 时仍会正常生成本次运行的汇总 CSV 和图像，因为绘图直接使用内存中的
-完整回测结果。
-
-## 使用真实数据
-
-复制或修改 `configs/base_config.yaml`：
-
-- 将 `market_data.source_root` 指向符合数据说明目录结构的原始数据根；
-- 将 `market_data.cache_root` 指向需要复用的市场面板缓存根目录；
-- 按研究区间修改各阶段日期；
-- 将 `factors.config_directory` 指向需要批量运行的 Factor YAML 目录；
-- 用 `run` 下的五个布尔值选择阶段；
-- 用 `output.save_backtest_details` 选择是否将完整回测明细写入 Parquet，默认关闭；
-- 原始数据或字段配置改变后，将 `run.refresh_market_data` 设为 `true` 刷新缓存。
-
-市场面板缓存保存在 `data/<主配置文件名>/`。关闭 Factor 阶段时，下游会从输出目录
-恢复 `factor.parquet`。只有启用 `output.save_backtest_details` 后，plotter-only 才能从
-回测 Parquet 恢复曲线并重新绘图；默认的汇总结果仍可用于读取和比较回测指标。
+因子目录包含 `factor.parquet`、按保留开关生成的评价或回测 Parquet，以及因子图；
+策略目录包含 `target_weights.parquet`、按保留开关生成的策略回测 Parquet，以及策略图。
+跨因子和跨策略汇总表统一放在 `summaries/`。
 
 ## Factor YAML
 
@@ -83,5 +116,6 @@ ruff check src examples scripts tests
 
 运行静态检查前可通过 `python -m pip install '.[dev]'` 安装开发依赖。
 
-内置端到端测试覆盖原始 CSV、市场缓存、动态 Factor、并行评价、两类回测、结果恢复和
-四类图像输出。
+`examples/data/` 中的 compact synthetic 数据仅作为自动化测试 fixture，不再是项目
+默认数据源。端到端测试仍用它覆盖原始 CSV、市场缓存、动态 Factor、并行评价、两类
+回测、结果恢复和四类图像输出，从而保证测试不依赖本机 Wind 数据。

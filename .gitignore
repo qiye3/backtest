@@ -32,6 +32,7 @@ MANIFEST
 venv/
 env/
 ENV/
+.venv313/
 
 # Tests and tooling
 .pytest_cache/
@@ -62,7 +63,8 @@ htmlcov/
 /logs/
 *.log
 *.parquet
+outputs_wind/
 
-# The compact synthetic raw data is a checked-in runnable example.
+# Compact synthetic raw data is retained only as a reproducible test fixture.
 !examples/data/
 !examples/data/**

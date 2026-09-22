@@ -1,0 +1,28 @@
+name: dividend_payout_ratio
+implementation:
+  module: factors.second_batch_factors.code.SecondBatchFactor
+  class: SecondBatchFactor
+params:
+  base_factor: dividend_payout_ratio
+  operator: raw
+  rolling_mean_window: 1
+  min_periods: 1
+  neutralize: false
+  winsorize:
+    min_quantile: 0.0
+    max_quantile: 1.0
+  reverse: false
+postprocess:
+  cross_section:
+    method: winsorize
+    min_quantile: 0.01
+    max_quantile: 0.99
+variants:
+- suffix: raw
+  neutralization:
+    method: none
+- suffix: industry_neutral
+  neutralization:
+    method: industry_demean
+    source: industry_history
+    field: ind_class_code

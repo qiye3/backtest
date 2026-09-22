@@ -1,0 +1,7 @@
+name: volatility_20d
+implementation:
+  module: src.factors.PriceVolumeFactor
+  class: PriceVolumeFactor
+params:
+  formula: volatility
+  window: 20

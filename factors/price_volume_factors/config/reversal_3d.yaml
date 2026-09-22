@@ -1,0 +1,7 @@
+name: reversal_3d
+implementation:
+  module: src.factors.PriceVolumeFactor
+  class: PriceVolumeFactor
+params:
+  formula: reversal
+  window: 3

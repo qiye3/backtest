@@ -12,6 +12,7 @@ from src.plotter.overall import (
     plot_overall_evaluation,
 )
 from src.plotter.strategy import plot_strategy_backtest, plot_weight_deviation
+from src.plotter.strategy_exposure import plot_strategy_risk_exposure
 
 __all__ = [
     "plot_factor",
@@ -22,5 +23,6 @@ __all__ = [
     "plot_result_directory",
     "plot_overall_evaluation",
     "plot_strategy_backtest",
+    "plot_strategy_risk_exposure",
     "plot_weight_deviation",
 ]

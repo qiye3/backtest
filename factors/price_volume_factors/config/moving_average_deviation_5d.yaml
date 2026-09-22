@@ -1,0 +1,7 @@
+name: moving_average_deviation_5d
+implementation:
+  module: src.factors.PriceVolumeFactor
+  class: PriceVolumeFactor
+params:
+  formula: moving_average_deviation
+  window: 5

@@ -41,8 +41,6 @@ RESULT_FILES = {
 FIGURE_FILES = {
     "00_factor_distribution.png",
     "01_evaluation.png",
-    "02_simple_backtest.png",
-    "03_account_backtest.png",
 }
 OVERALL_FIGURE_FILES = {
     "factor_correlation_heatmap.png",
@@ -146,7 +144,9 @@ class EndToEndTests(unittest.TestCase):
                     "overall_evaluation": False,
                 }
             )
-            previous_factor_path = output_root / "return_10d" / "factor.parquet"
+            previous_factor_path = (
+                output_root / "factors" / "return_10d" / "factor.parquet"
+            )
             previous_factor_path.parent.mkdir(parents=True)
             previous_factor_path.write_bytes(b"previous successful result")
             self._write_config(config_path, config_data)
@@ -160,7 +160,12 @@ class EndToEndTests(unittest.TestCase):
 
             checkpoint_root = output_root / ".pipeline_cache"
             self.assertTrue(
-                (checkpoint_root / "return_10d" / "factor.parquet").is_file()
+                (
+                    checkpoint_root
+                    / "factors"
+                    / "return_10d"
+                    / "factor.parquet"
+                ).is_file()
             )
             self.assertEqual(
                 previous_factor_path.read_bytes(),
@@ -201,10 +206,17 @@ class EndToEndTests(unittest.TestCase):
                     run(load_config(config_path))
 
             self.assertTrue((output_root / "config_snapshot.yaml").is_file())
-            self.assertTrue((output_root / "factor_summary_daily.csv").is_file())
-            self.assertTrue((output_root / "factor_summary_weekly.csv").is_file())
+            summary_root = output_root / "summaries"
+            self.assertTrue(
+                (summary_root / "factor_summary_daily.csv").is_file()
+            )
+            self.assertTrue(
+                (summary_root / "factor_summary_weekly.csv").is_file()
+            )
             for factor_name in FACTOR_NAMES:
-                figure_directory = output_root / factor_name / "figures"
+                figure_directory = (
+                    output_root / "factors" / factor_name / "figures"
+                )
                 self.assertTrue(
                     (figure_directory / "00_factor_distribution.png").is_file()
                 )
@@ -237,8 +249,12 @@ class EndToEndTests(unittest.TestCase):
             self._write_config(config_path, config_data)
 
             run_summary = run(load_config(config_path))
-            daily_summary_path = output_root / "factor_summary_daily.csv"
-            weekly_summary_path = output_root / "factor_summary_weekly.csv"
+            daily_summary_path = (
+                output_root / "summaries" / "factor_summary_daily.csv"
+            )
+            weekly_summary_path = (
+                output_root / "summaries" / "factor_summary_weekly.csv"
+            )
             daily_summary = pd.read_csv(daily_summary_path)
             weekly_summary = pd.read_csv(weekly_summary_path)
 
@@ -405,10 +421,10 @@ class EndToEndTests(unittest.TestCase):
             self.assertIn("100%", progress_output.getvalue())
             self.assertIn("overall_evaluation", progress_output.getvalue())
             daily_summary = pd.read_csv(
-                output_root / "factor_summary_daily.csv"
+                output_root / "summaries" / "factor_summary_daily.csv"
             )
             weekly_summary = pd.read_csv(
-                output_root / "factor_summary_weekly.csv"
+                output_root / "summaries" / "factor_summary_weekly.csv"
             )
             self.assertEqual(len(daily_summary), len(FACTOR_NAMES))
             self.assertEqual(len(weekly_summary), len(FACTOR_NAMES))
@@ -440,6 +456,7 @@ class EndToEndTests(unittest.TestCase):
                 ].notna().all().all()
             )
             self.assertNotIn("mode", weekly_summary.columns)
+
             self.assertFalse((output_root / "metrics_summary.csv").exists())
             self.assertFalse(
                 (output_root / "factor_screening_summary.csv").exists()
@@ -447,7 +464,7 @@ class EndToEndTests(unittest.TestCase):
             self.assertTrue((output_root / "config_snapshot.yaml").is_file())
             evaluation = load_evaluation_results(
                 ["return_10d"],
-                output_root,
+                output_root / "factors",
             )["return_10d"]
             self.assertEqual(
                 list(
@@ -495,6 +512,7 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(
                 set(cache_times),
                 {
+                    "industry_history.parquet",
                     "index_price.parquet",
                     "index_membership.parquet",
                     "stock_quote.parquet",
@@ -506,6 +524,7 @@ class EndToEndTests(unittest.TestCase):
                     for path in cache_directory.glob("*.meta.json")
                 },
                 {
+                    "industry_history.meta.json",
                     "index_price.meta.json",
                     "index_membership.meta.json",
                     "stock_quote.meta.json",
@@ -523,10 +542,69 @@ class EndToEndTests(unittest.TestCase):
             self._run_plotter_from_results(config_path, config_data)
             self._run_without_derived_parquets(config_path, config_data)
             for factor_name in FACTOR_NAMES:
-                factor_directory = output_root / factor_name
+                factor_directory = output_root / "factors" / factor_name
                 self.assertEqual(
                     {path.name for path in factor_directory.glob("*.parquet")},
                     {"factor.parquet"},
+                )
+
+    def test_overall_only_run_removes_individual_factor_figures(self) -> None:
+        """overall-only 模式应输出总图，并清理单因子历史 figures 目录。"""
+        with TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory)
+            output_root = workspace / "output"
+            config_path = workspace / "overall_only.yaml"
+            config_data = self._test_config(output_root)
+            config_data["market_data"]["cache_root"] = str(
+                workspace / "market_cache"
+            )
+            config_data["run"].update(
+                {
+                    "simple_backtest": False,
+                    "account_backtest": False,
+                    "plotter": False,
+                    "overall_evaluation": True,
+                }
+            )
+            config_data["plots"]["overall"] = {
+                "factor_distribution_grid": {
+                    "enabled": True,
+                    "columns": 2,
+                },
+                "group_return_grid": {
+                    "enabled": True,
+                    "columns": 2,
+                    "share_y_axis": True,
+                },
+            }
+            stale_figure_directory = (
+                output_root / "factors" / FACTOR_NAMES[0] / "figures"
+            )
+            stale_figure_directory.mkdir(parents=True)
+            (stale_figure_directory / "old.png").write_bytes(b"old")
+            self._write_config(config_path, config_data)
+
+            run_summary = run(load_config(config_path))
+
+            self.assertEqual(
+                list(run_summary.stage_counts),
+                ["factors", "group_return", "overall_evaluation"],
+            )
+            self.assertEqual(
+                {
+                    path.name
+                    for path in (output_root / "00_overall").glob("*.png")
+                },
+                OVERALL_FIGURE_FILES,
+            )
+            for factor_name in FACTOR_NAMES:
+                self.assertFalse(
+                    (
+                        output_root
+                        / "factors"
+                        / factor_name
+                        / "figures"
+                    ).exists()
                 )
 
     def test_external_returns_drive_evaluation_and_simple(self) -> None:
@@ -576,11 +654,11 @@ class EndToEndTests(unittest.TestCase):
 
             price_evaluation = load_evaluation_results(
                 ["return_10d"],
-                price_output,
+                price_output / "factors",
             )["return_10d"]
             external_evaluation = load_evaluation_results(
                 ["return_10d"],
-                external_output,
+                external_output / "factors",
             )["return_10d"]
             self.assertNotIn("members", external_evaluation)
             self.assertNotIn("labels", external_evaluation)
@@ -597,14 +675,14 @@ class EndToEndTests(unittest.TestCase):
 
             price_curve = load_backtest_results(
                 ["return_10d"],
-                price_output,
+                price_output / "factors",
                 "simple",
             )["return_10d"]["periods"][1]["groups"]["G10"]["curves"][
                 "daily"
             ]
             external_curve = load_backtest_results(
                 ["return_10d"],
-                external_output,
+                external_output / "factors",
                 "simple",
             )["return_10d"]["periods"][1]["groups"]["G10"]["curves"][
                 "daily"
@@ -620,7 +698,9 @@ class EndToEndTests(unittest.TestCase):
                 0.0,
             )
 
-            factor_panel = load_factor_panels(external_output)["return_10d"]
+            factor_panel = load_factor_panels(
+                external_output / "factors"
+            )["return_10d"]
             excess_settings = deepcopy(load_config(config_path).raw["group_return"])
             excess_settings["target"] = {
                 "type": "benchmark_excess_return",
@@ -680,17 +760,18 @@ class EndToEndTests(unittest.TestCase):
             summary = run(load_config(config_path))
             self.assertEqual(summary.stage_counts["factors"], 2)
             daily_summary = pd.read_csv(
-                output_root / "factor_summary_daily.csv"
+                output_root / "summaries" / "factor_summary_daily.csv"
             )
             self.assertEqual(len(daily_summary), len(FACTOR_NAMES))
             self.assertIn("sharpe_1d", daily_summary.columns)
             self.assertIn("sharpe_5d", daily_summary.columns)
             self.assertNotIn("mode", daily_summary.columns)
-            factor_panel = load_factor_panels(output_root)["return_10d"]
+            factor_result_root = output_root / "factors"
+            factor_panel = load_factor_panels(factor_result_root)["return_10d"]
             backtest_results = {
                 mode: load_backtest_results(
                     ["return_10d"],
-                    output_root,
+                    factor_result_root,
                     mode,
                 )["return_10d"]
                 for mode in ["simple", "account"]
@@ -720,7 +801,7 @@ class EndToEndTests(unittest.TestCase):
             for mode in ["simple", "account"]:
                 restored = load_backtest_results(
                     ["return_10d"],
-                    output_root,
+                    factor_result_root,
                     mode,
                 )["return_10d"]
                 self.assertEqual(restored["rebalance_frequency"], "daily")
@@ -751,6 +832,16 @@ class EndToEndTests(unittest.TestCase):
     def _test_config(output_root: Path) -> dict:
         """把 Wind 默认配置替换为可重复的 synthetic 测试数据。"""
         config_data = yaml.safe_load(BASE_CONFIG_PATH.read_text(encoding="utf-8"))
+        config_data["run"].update(
+            {
+                "factors": True,
+                "group_return": True,
+                "simple_backtest": True,
+                "account_backtest": True,
+                "plotter": True,
+                "overall_evaluation": True,
+            }
+        )
         config_data["factors"]["config_directory"] = str(
             PROJECT_ROOT / "examples" / "config" / "base_factors"
         )
@@ -785,6 +876,17 @@ class EndToEndTests(unittest.TestCase):
         config_data["plots"] = {
             "formats": ["png"],
             "dpi": 60,
+            "overall": {
+                "factor_distribution_grid": {
+                    "enabled": True,
+                    "columns": 2,
+                },
+                "group_return_grid": {
+                    "enabled": True,
+                    "columns": 2,
+                    "share_y_axis": True,
+                },
+            },
         }
         return config_data
 
@@ -887,7 +989,7 @@ class EndToEndTests(unittest.TestCase):
     def _assert_outputs(self, output_root: Path) -> None:
         """检查结果文件、图像和核心表均实际包含记录。"""
         for factor_name in FACTOR_NAMES:
-            factor_directory = output_root / factor_name
+            factor_directory = output_root / "factors" / factor_name
             self.assertEqual(
                 {path.name for path in factor_directory.glob("*.parquet")},
                 RESULT_FILES,

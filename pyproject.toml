@@ -24,6 +24,11 @@ dev = ["ruff>=0.8"]
 include = ["examples*", "factors*", "src*", "strategies*"]
 
 [tool.setuptools.package-data]
+"factors.growth_factors" = ["config/*.yaml", "*.yaml"]
+"factors.quality_factors" = ["config/*.yaml", "*.yaml"]
+"factors.value_factors" = ["config/*.yaml", "*.yaml"]
+"factors.first_batch_factors" = ["config/*.yaml", "*.yaml"]
+"factors.second_batch_factors" = ["config/*.yaml", "*.yaml"]
 "strategies.yfd_growth100_factors" = [
   "*.yaml",
   "factor_configs/*.yaml",

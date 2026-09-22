@@ -19,7 +19,11 @@ from src.config import RunConfig, load_config
 from src.data.market_data import MarketData
 from src.factors import calc_factors, load_factors
 from src.factors.io import save_factor_panels
+from src.group_return import evaluate_factors
+from src.group_return.io import save_evaluation_results
 from src.plotter.backtest import plot_backtest
+from src.plotter.distribution import plot_distribution
+from src.plotter.evaluation import plot_evaluation
 
 BENCHMARK_CODE = "000906.SH"
 UNIVERSE_INDEX_CODES = ("000906.SH", "000852.SH")
@@ -209,6 +213,53 @@ def run_frequency(
     return metrics
 
 
+def run_forward_return_evaluation(
+    factor_panels: dict[str, pd.DataFrame],
+    market_data: MarketData,
+    config: RunConfig,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+    output_root: Path,
+) -> None:
+    """计算与调仓频率无关的前瞻分组收益，并保存评价表和图像。"""
+    settings = deepcopy(config.raw["group_return"])
+    settings["start"] = str(start_date.date())
+    settings["end"] = str(end_date.date())
+    # 与真实回测保持一致：交易日使用前一交易日已经收盘的因子值。
+    settings["factor_lag_days"] = 1
+    settings["missing_price_policy"] = "previous_close"
+
+    print("[evaluation] group return and IC", flush=True)
+    evaluation_results = evaluate_factors(
+        factor_panels=factor_panels,
+        market_data=market_data,
+        settings=settings,
+        max_workers=config.raw["run"]["max_workers"],
+    )
+    evaluation_output_root = output_root / "evaluation"
+    save_evaluation_results(
+        evaluation_results,
+        evaluation_output_root,
+    )
+    for factor_name, evaluation_result in evaluation_results.items():
+        figure_directory = evaluation_output_root / factor_name / "figures"
+        evaluation_factor_panel = factor_panels[factor_name].loc[
+            start_date:end_date
+        ]
+        plot_distribution(
+            factor_name=factor_name,
+            factor_panel=evaluation_factor_panel,
+            settings=config.raw["plots"],
+            output_stem=figure_directory / "factor_distribution",
+        )
+        plot_evaluation(
+            factor_name=factor_name,
+            group_return_result=evaluation_result,
+            settings=config.raw["plots"],
+            output_stem=figure_directory / "evaluation",
+        )
+
+
 def _backtest_settings(
     base_settings: dict[str, Any],
     frequency: str,
@@ -238,19 +289,28 @@ def main() -> None:
     """解析路径和日期，构建一次真实面板并依次运行两种频率。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
-    parser.add_argument("--wind-cache-root", required=True, type=Path)
-    parser.add_argument("--output-root", required=True, type=Path)
-    parser.add_argument("--market-start", required=True)
-    parser.add_argument("--backtest-start", required=True)
-    parser.add_argument("--end", required=True)
+    parser.add_argument("--wind-cache-root", type=Path)
+    parser.add_argument("--output-root", type=Path)
+    parser.add_argument("--market-start")
+    parser.add_argument("--backtest-start")
+    parser.add_argument("--end")
     arguments = parser.parse_args()
 
     config = load_config(arguments.config)
-    market_start = pd.Timestamp(arguments.market_start)
-    backtest_start = pd.Timestamp(arguments.backtest_start)
-    end_date = pd.Timestamp(arguments.end)
+    market_data_settings = config.raw["market_data"]
+    wind_cache_root = arguments.wind_cache_root or Path(
+        market_data_settings["source_root"]
+    )
+    output_root = arguments.output_root or config.output_root
+    market_start = pd.Timestamp(
+        arguments.market_start or market_data_settings["start_date"]
+    )
+    backtest_start = pd.Timestamp(
+        arguments.backtest_start or config.raw["simple_backtest"]["start"]
+    )
+    end_date = pd.Timestamp(arguments.end or market_data_settings["end_date"])
     market_data, quality_summary = load_wind_market_data(
-        wind_cache_root=arguments.wind_cache_root.expanduser().resolve(),
+        wind_cache_root=wind_cache_root.expanduser().resolve(),
         start_date=market_start,
         end_date=end_date,
         max_workers=config.raw["run"]["max_workers"],
@@ -272,11 +332,19 @@ def main() -> None:
         config.raw[section_name]["start"] = str(backtest_start.date())
         config.raw[section_name]["end"] = str(end_date.date())
 
-    output_root = arguments.output_root.expanduser().resolve()
+    output_root = output_root.expanduser().resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     (output_root / "data_quality.json").write_text(
         json.dumps(quality_summary, ensure_ascii=False, indent=2),
         encoding="utf-8",
+    )
+    run_forward_return_evaluation(
+        factor_panels=factor_panels,
+        market_data=market_data,
+        config=config,
+        start_date=backtest_start,
+        end_date=end_date,
+        output_root=output_root,
     )
     for frequency in ["daily", "weekly"]:
         run_frequency(

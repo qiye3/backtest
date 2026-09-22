@@ -1,5 +1,5 @@
 # 主配置串联 Wind 数据、因子、评价和回测；运行命令为：
-# python -m scripts.run_wind_cache_backtests --config configs/base_config.yaml
+# python -m src.cli --config configs/base_config.yaml
 # 默认十组加两个重叠极端组，分组和绘图参数由 src.config 提供。
 
 # 控制本次运行哪些阶段；CLI 不提供阶段覆盖参数。
@@ -9,9 +9,9 @@ run:
   # 是否计算分组收益、IC 和 RankIC，并覆盖保存 group_return.parquet。
   group_return: true
   # 是否运行归一化净值回测，并覆盖保存 simple_backtest.parquet。
-  simple_backtest: true
+  simple_backtest: false
   # 是否运行带现金账户和成交约束的回测，并覆盖保存 account_backtest.parquet。
-  account_backtest: true
+  account_backtest: false
   # 是否根据已有或本次生成的结果绘图。
   plotter: true
   # 是否在所有单因子阶段结束后输出跨因子相关性、IC 和多空收益分布。
@@ -27,8 +27,8 @@ factors:
   config_directory: ../examples/config/base_factors
 
 output:
-  # 每个因子的结果和图像写入该目录下的同名子目录。
-  root: ../outputs_real_wind
+  # 正式结果分别写入该目录下的 factors、strategies 和 summaries。
+  root: ../outputs_wind
   # 分别控制四类阶段结果是否保留为 Parquet；默认只保留因子面板。
   save_parquet:
     factor: true
@@ -40,10 +40,10 @@ output:
 
 # 本机 Wind Parquet 缓存和真实研究区间。
 market_data:
-  # 目录下需要包含 raw/csi1800_2010 和 raw/csi800_2010。
-  source_root: /Users/qiye/Desktop/wind_cache
-  # 标准 CSV 入口使用该缓存目录；Wind 专用入口直接读取 source_root。
-  cache_root: ../data
+  # Wind Parquet 已整理为框架原生的 index/stock CSV 目录。
+  source_root: /Users/qiye/Desktop/wind_cache/formal_factor_backtest
+  # 正式 MarketData 链路生成的来源级 Parquet 缓存。
+  cache_root: ../data/wind_formal
   # 数据范围需要覆盖因子预热期、评价期和回测期。
   start_date: "2024-01-02"
   end_date: "2026-09-09"
@@ -61,6 +61,11 @@ market_data:
     stock_quote:
       fields:
         - S_DQ_ADJCLOSE
+    industry_history:
+      fields:
+        - ind_class_code
+      filters:
+        industry_class_code: CITICS
 
 # 可选外部日收益宽表；配置后 evaluation 和 simple 共用，account 仍使用真实价格。
 # 索引为交易日、列为股票代码，t 行表示 t-1 收盘至 t 收盘的收益。
@@ -84,11 +89,13 @@ group_return:
     holiday_policy: previous_trading_day
   # 未来收益起终点使用复权收盘价；还可选择 open。
   reference_price: close
-  # stock_return 为个股收益；benchmark_excess_return 为减去中证800同期收益。
+  # raw 变体使用基准超额收益，行业中性变体先去行业收益再减基准。
   target:
-    type: benchmark_excess_return
-    # 超额收益可选择 index_price 或 index_total_return；仅超额模式填写。
+    type: factor_variant_excess_return
     benchmark_source: index_price
+    industry_neutral_suffix: __industry_neutral
+    industry_source: industry_history
+    industry_field: ind_class_code
   # 交易日周期按交易日位置确定终点。
   # future_return_days:
     # - 1
@@ -117,12 +124,11 @@ simple_backtest:
   universe_indices:
     - 000906.SH
     - 000852.SH
-  # 每 1、2、4 个自然周分别运行一条回测。
+  # 回测配置预留 1 周和 4 周，默认阶段开关关闭。
   rebalance:
     frequency: weekly
     intervals:
       - 1
-      - 2
       - 4
     weekday: FRI
     anchor_date: "2024-02-02"
@@ -144,8 +150,8 @@ simple_backtest:
   liquidate_at_end: false
   # 分组为空时转为现金；还可选择 hold、error。
   empty_group_policy: cash
-  # 股票数不足默认报错；还可选择 cash、hold。
-  insufficient_stocks_policy: error
+  # 股票数不足时持有现金。
+  insufficient_stocks_policy: cash
   # 成交价缺失时直接报错；也可选择 previous_close。
   missing_price_policy: previous_close
   # previous_close 最多允许回看多少个交易日；null 表示不限制。
@@ -167,7 +173,6 @@ account_backtest:
     frequency: weekly
     intervals:
       - 1
-      - 2
       - 4
     weekday: FRI
     anchor_date: "2024-02-02"

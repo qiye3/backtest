@@ -15,6 +15,7 @@ import yaml
 
 from src.data import market_data as market_data_module
 from src.data.market_data import MarketData
+from src.data.style_exposure import load_or_build_style_exposures
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SYNTHETIC_DATA_ROOT = PROJECT_ROOT / "examples" / "data"
@@ -22,6 +23,53 @@ SYNTHETIC_DATA_ROOT = PROJECT_ROOT / "examples" / "data"
 
 class MarketDataCacheTests(unittest.TestCase):
     """验证共享、扩容、切片和来源口径冲突。"""
+
+    def test_style_exposure_cache_reuses_and_refreshes_fixed_file(self) -> None:
+        """风格暴露命中固定文件直接复用，refresh 时覆盖重建。"""
+        dates = pd.DatetimeIndex(["2024-01-02"], name="date")
+        stock_codes = pd.Index(["000001.SZ"], name="asset_code")
+        membership = pd.DataFrame(True, index=dates, columns=stock_codes)
+        style_columns = pd.MultiIndex.from_product(
+            [["Size"], stock_codes],
+            names=["style_name", "asset_code"],
+        )
+        first_exposures = pd.DataFrame(
+            [[1.0]],
+            index=dates,
+            columns=style_columns,
+        )
+        refreshed_exposures = pd.DataFrame(
+            [[2.0]],
+            index=dates,
+            columns=style_columns,
+        )
+        with TemporaryDirectory() as temporary_directory:
+            market_data = MarketData(
+                source_panels={},
+                calendar=dates,
+                membership=membership,
+                benchmark_index="000906.SH",
+                cache_directory=Path(temporary_directory),
+            )
+            with patch(
+                "src.data.style_exposure.build_style_exposures",
+                return_value=first_exposures,
+            ) as build_exposures:
+                first_result = load_or_build_style_exposures(market_data)
+                cached_result = load_or_build_style_exposures(market_data)
+            self.assertEqual(build_exposures.call_count, 1)
+            pd.testing.assert_frame_equal(first_result, cached_result)
+
+            with patch(
+                "src.data.style_exposure.build_style_exposures",
+                return_value=refreshed_exposures,
+            ) as refresh_exposures:
+                refreshed_result = load_or_build_style_exposures(
+                    market_data,
+                    refresh=True,
+                )
+            refresh_exposures.assert_called_once_with(market_data)
+            pd.testing.assert_frame_equal(refreshed_result, refreshed_exposures)
 
     def test_static_fields_and_forecast_horizons_share_cache(self) -> None:
         """证券主数据应广播到日频，多期限预期缓存可按请求切片。"""

@@ -14,6 +14,7 @@ import pandas as pd
 import yaml
 
 from src.group_return.grouping import validate_ranges
+from src.output_layout import factor_output_root
 
 STAGE_NAMES = [
     "factors",
@@ -41,6 +42,7 @@ ROOT_KEYS = {
     "run",
     "factors",
     "strategies",
+    "strategy_analysis",
     "output",
     "market_data",
     "group_return",
@@ -145,6 +147,10 @@ CONFIG_DEFAULTS = {
     "output": {
         "save_parquet": dict(DEFAULT_PARQUET_RETENTION),
     },
+    "strategy_analysis": {
+        "enabled": False,
+        "minimum_style_coverage": 0.95,
+    },
     "group_return": {
         "factor_lag_days": 0,
         "grouping": deepcopy(DEFAULT_GROUPING),
@@ -199,7 +205,7 @@ CONFIG_DEFAULTS = {
             },
         },
         "simple": {
-            "enabled": True,
+            "enabled": False,
             "layout": "rows",
             "group_colors": list(DEFAULT_BACKTEST_GROUP_COLORS),
             "benchmark_color": "#777777",
@@ -207,7 +213,7 @@ CONFIG_DEFAULTS = {
             "metric_columns": list(DEFAULT_METRIC_COLUMNS),
         },
         "account": {
-            "enabled": True,
+            "enabled": False,
             "layout": "rows",
             "group_colors": list(DEFAULT_BACKTEST_GROUP_COLORS),
             "benchmark_color": "#777777",
@@ -239,9 +245,7 @@ def save_config_snapshot(
     output_root: str | Path | None = None,
 ) -> Path:
     """把本次实际使用且已补全默认值的完整配置保存到输出根目录。"""
-    snapshot_root = (
-        config.output_root if output_root is None else Path(output_root)
-    )
+    snapshot_root = config.output_root if output_root is None else Path(output_root)
     output_path = snapshot_root / "config_snapshot.yaml"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
@@ -254,9 +258,7 @@ def save_config_snapshot(
 def load_config(config_path: str | Path) -> RunConfig:
     """读取主 YAML，并只校验配置中已经启用的运行阶段。"""
     resolved_path = Path(config_path).expanduser().resolve()
-    configured_values = yaml.safe_load(
-        resolved_path.read_text(encoding="utf-8")
-    )
+    configured_values = yaml.safe_load(resolved_path.read_text(encoding="utf-8"))
     _check_keys(configured_values, {"run", "output"}, ROOT_KEYS, "root")
     raw_config = _merge_config_defaults(configured_values)
     _validate_run(raw_config["run"])
@@ -285,7 +287,10 @@ def load_config(config_path: str | Path) -> RunConfig:
     )
 
     run_settings = raw_config["run"]
-    if any(run_settings[stage] for stage in CALCULATION_STAGES):
+    if (
+        any(run_settings[stage] for stage in CALCULATION_STAGES)
+        or raw_config.get("strategy_analysis", {}).get("enabled", False)
+    ):
         _section(raw_config, "market_data")
 
     external_return_path = None
@@ -304,7 +309,7 @@ def load_config(config_path: str | Path) -> RunConfig:
 
     output_root = _resolve_path(resolved_path, raw_config["output"]["root"])
     factor_config_directory = None
-    factor_result_root = output_root
+    factor_result_root = factor_output_root(output_root)
     if "factors" in raw_config:
         factors_config = _section(raw_config, "factors")
         _check_keys(
@@ -361,13 +366,13 @@ def load_config(config_path: str | Path) -> RunConfig:
     ):
         _validate_metrics(_section(raw_config, "metrics"))
     if external_return_path is not None and (
-        run_settings["simple_backtest"]
-        or run_settings["strategy_simple_backtest"]
+        run_settings["simple_backtest"] or run_settings["strategy_simple_backtest"]
     ):
         if raw_config["simple_backtest"]["trade_price"] != "close":
             raise ValueError("外部日收益回测要求 simple_backtest.trade_price 为 close")
     if run_settings["plotter"] or run_settings["overall_evaluation"]:
         _validate_plots(_section(raw_config, "plots"))
+    _validate_strategy_analysis(raw_config["strategy_analysis"])
 
     return RunConfig(
         path=resolved_path,
@@ -459,9 +464,7 @@ def _merge_config_defaults(
             else:
                 target_section[key] = deepcopy(value)
     for section_name in ["group_return", "simple_backtest", "account_backtest"]:
-        configured_grouping = configured_values.get(section_name, {}).get(
-            "grouping"
-        )
+        configured_grouping = configured_values.get(section_name, {}).get("grouping")
         if (
             configured_grouping is not None
             and "quantile_edges" in configured_grouping
@@ -541,24 +544,44 @@ def _validate_evaluation_target(settings: Mapping[str, Any]) -> None:
     target_type = settings["type"]
     _choice(
         target_type,
-        {"stock_return", "benchmark_excess_return"},
+        {
+            "stock_return",
+            "benchmark_excess_return",
+            "factor_variant_excess_return",
+        },
         "group_return.target.type",
     )
     expected_keys = {"type"}
-    if target_type == "benchmark_excess_return":
+    if target_type in {"benchmark_excess_return", "factor_variant_excess_return"}:
         expected_keys.add("benchmark_source")
+    if target_type == "factor_variant_excess_return":
+        expected_keys.update(
+            {
+                "industry_neutral_suffix",
+                "industry_source",
+                "industry_field",
+            }
+        )
     _check_keys(
         settings,
         expected_keys,
         expected_keys,
         "group_return.target",
     )
-    if target_type == "benchmark_excess_return":
+    if target_type in {"benchmark_excess_return", "factor_variant_excess_return"}:
         _choice(
             settings["benchmark_source"],
             {"index_price", "index_total_return"},
             "group_return.target.benchmark_source",
         )
+    if target_type == "factor_variant_excess_return":
+        for field_name in [
+            "industry_neutral_suffix",
+            "industry_source",
+            "industry_field",
+        ]:
+            if not isinstance(settings[field_name], str) or not settings[field_name]:
+                raise ValueError(f"group_return.target.{field_name} 必须是非空字符串")
 
 
 def _validate_backtest(
@@ -667,9 +690,7 @@ def _validate_grouping(
         if not isinstance(aliases, list):
             raise TypeError(f"{location}.group_aliases 必须是列表或 null")
         if len(aliases) != len(ranges):
-            raise ValueError(
-                f"{location}.group_aliases 必须与 quantile_edges 数量一致"
-            )
+            raise ValueError(f"{location}.group_aliases 必须与 quantile_edges 数量一致")
         if any(not isinstance(alias, str) or not alias.strip() for alias in aliases):
             raise ValueError(f"{location}.group_aliases 只能包含非空字符串")
         if len(aliases) != len(set(aliases)):
@@ -697,14 +718,10 @@ def _validate_grouping(
         weighting["lag_days"],
         f"{location}.weighting.lag_days",
     )
-    if weighting["method"] == "field" and (
-        not weighting.get("source") or not weighting["field"]
-    ):
+    if weighting["method"] == "field" and (not weighting.get("source") or not weighting["field"]):
         raise ValueError(f"{location}.weighting.field 需要 source 和 field")
     if weighting["method"] == "equal" and (
-        "source" in weighting
-        or weighting["field"] is not None
-        or weighting["lag_days"] != 0
+        "source" in weighting or weighting["field"] is not None or weighting["lag_days"] != 0
     ):
         raise ValueError(f"{location}.weighting.equal 包含无效字段")
 
@@ -754,7 +771,11 @@ def _validate_rebalance_schedule(
     if frequency == "weekly":
         expected_keys |= {"weekday", "anchor_date", "holiday_policy"}
     elif frequency == "quarterly":
-        expected_keys |= {"months", "trading_day"}
+        expected_keys.add("months")
+        if settings.get("date_rule") == "second_friday_next_trading_day":
+            expected_keys.add("date_rule")
+        else:
+            expected_keys.add("trading_day")
     _check_keys(settings, expected_keys, expected_keys, location)
     _positive_integer_list(settings["intervals"], f"{location}.intervals")
     if frequency == "daily":
@@ -768,10 +789,11 @@ def _validate_rebalance_schedule(
             or any(not isinstance(month, int) or not 1 <= month <= 12 for month in months)
         ):
             raise ValueError(f"{location}.months 必须是唯一的 1 至 12 月份列表")
-        _positive_integer(
-            settings["trading_day"],
-            f"{location}.trading_day",
-        )
+        if "trading_day" in settings:
+            _positive_integer(
+                settings["trading_day"],
+                f"{location}.trading_day",
+            )
         return
     _choice(
         settings["weekday"],
@@ -871,11 +893,16 @@ def _validate_plots(settings: Mapping[str, Any]) -> None:
     }
     _check_keys(settings, expected_keys, expected_keys, "plots")
     formats = settings["formats"]
-    if not isinstance(formats, list) or not formats or set(formats) - {
-        "png",
-        "pdf",
-        "svg",
-    }:
+    if (
+        not isinstance(formats, list)
+        or not formats
+        or set(formats)
+        - {
+            "png",
+            "pdf",
+            "svg",
+        }
+    ):
         raise ValueError("plots.formats 只能包含 png、pdf、svg")
     _positive_integer(settings["dpi"], "plots.dpi")
     _positive_integer(settings["legend_columns"], "plots.legend_columns")
@@ -898,6 +925,24 @@ def _validate_plots(settings: Mapping[str, Any]) -> None:
     _validate_simple_plot(settings["simple"])
     _validate_account_plot(settings["account"])
     _plot_keys(settings["strategy"], {"enabled"}, "strategy")
+
+
+def _validate_strategy_analysis(settings: Mapping[str, Any]) -> None:
+    """校验策略风险暴露分析开关和风格覆盖率阈值。"""
+    expected_keys = {"enabled", "minimum_style_coverage"}
+    _check_keys(
+        settings,
+        expected_keys,
+        expected_keys,
+        "strategy_analysis",
+    )
+    _boolean(settings["enabled"], "strategy_analysis.enabled")
+    coverage = _finite_number(
+        settings["minimum_style_coverage"],
+        "strategy_analysis.minimum_style_coverage",
+    )
+    if not 0 <= coverage <= 1:
+        raise ValueError("strategy_analysis.minimum_style_coverage 必须在 [0, 1]")
 
 
 def _validate_distribution_plot(settings: Mapping[str, Any]) -> None:
@@ -1147,9 +1192,7 @@ def _check_keys(
 def _choice(value: Any, choices: set[Any], location: str) -> None:
     """检查配置值属于明确支持的有限集合。"""
     if value not in choices:
-        raise ValueError(
-            f"{location} 必须是 {sorted(choices)}，实际为 {value!r}"
-        )
+        raise ValueError(f"{location} 必须是 {sorted(choices)}，实际为 {value!r}")
 
 
 def _boolean(value: Any, location: str) -> None:
@@ -1173,9 +1216,7 @@ def _nonnegative_integer(value: Any, location: str) -> None:
 def _finite_number(value: Any, location: str) -> float:
     """检查普通有限数值并返回浮点表示。"""
     is_finite_number = (
-        not isinstance(value, bool)
-        and isinstance(value, Real)
-        and np.isfinite(value)
+        not isinstance(value, bool) and isinstance(value, Real) and np.isfinite(value)
     )
     if not is_finite_number:
         raise ValueError(f"{location} 必须是有限数值")

@@ -7,7 +7,7 @@ run:
   account_backtest: false
   strategies: true
   strategy_simple_backtest: true
-  strategy_account_backtest: true
+  strategy_account_backtest: false
   plotter: true
   overall_evaluation: false
   max_workers: 4
@@ -23,6 +23,10 @@ strategies:
   config_directory: strategy_configs
   start: "2024-02-01"
   end: "2026-09-09"
+
+strategy_analysis:
+  enabled: true
+  minimum_style_coverage: 0.95
 
 output:
   root: ../../outputs_growth100
@@ -64,9 +68,15 @@ market_data:
     stock_valuation:
       fields:
         - S_VAL_MV
+        - FREE_SHARES_TODAY
     stock_basic:
       fields:
         - LISTDATE
+    industry_history:
+      fields:
+        - ind_class_code
+      filters:
+        industry_class_code: CITICS
     financial_income:
       fields:
         - NET_PROFIT_EXCL_MIN_INT_INC
@@ -83,10 +93,6 @@ market_data:
         - con_npgrate_13w
         - con_npcgrate_2y
         - con_roe
-    free_float:
-      fields:
-        - S_SHARE_FREESHARES
-
 simple_backtest:
   start: "2024-02-01"
   end: "2026-09-09"
@@ -151,10 +157,14 @@ metrics:
   account_annual_return: compound
 
 plots:
-  # 本示例只运行指数增强回测；保留信号分布图和策略专用图。
+  # 仅输出指数增强策略回测图，不输出内部因子研究图。
+  distribution:
+    enabled: false
   evaluation:
     enabled: false
   simple:
     enabled: false
   account:
     enabled: false
+  strategy:
+    enabled: true

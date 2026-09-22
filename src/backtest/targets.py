@@ -148,8 +148,14 @@ def _quarterly_rebalance_dates(
     rebalance: Mapping[str, Any],
     interval: int,
 ) -> pd.DatetimeIndex:
-    """选择配置月份的第 N 个交易日，并按季度序列应用间隔。"""
+    """按月内交易日或第二个星期五的下一交易日生成调整日期。"""
     configured_months = set(rebalance["months"])
+    if rebalance.get("date_rule") == "second_friday_next_trading_day":
+        return _second_friday_effective_dates(
+            available_dates,
+            configured_months,
+            interval,
+        )
     selected_dates = []
     calendar_frame = pd.DataFrame({"date": available_dates})
     calendar_frame["year"] = available_dates.year
@@ -166,6 +172,28 @@ def _quarterly_rebalance_dates(
             selected_dates.append(
                 monthly_dates.iloc[trading_day_position]["date"]
             )
+    return pd.DatetimeIndex(selected_dates[::interval], name="date")
+
+
+def _second_friday_effective_dates(
+    available_dates: pd.DatetimeIndex,
+    configured_months: set[int],
+    interval: int,
+) -> pd.DatetimeIndex:
+    """选择配置月份第二个星期五之后的首个交易日。"""
+    selected_dates = []
+    for year in range(available_dates.min().year, available_dates.max().year + 1):
+        for month in sorted(configured_months):
+            month_start = pd.Timestamp(year=year, month=month, day=1)
+            month_end = month_start + pd.offsets.MonthEnd(1)
+            fridays = pd.date_range(month_start, month_end, freq="W-FRI")
+            if len(fridays) < 2:
+                continue
+            date_position = available_dates.searchsorted(fridays[1], side="right")
+            if date_position < len(available_dates):
+                effective_date = available_dates[date_position]
+                if effective_date <= month_end + pd.Timedelta(days=7):
+                    selected_dates.append(effective_date)
     return pd.DatetimeIndex(selected_dates[::interval], name="date")
 
 

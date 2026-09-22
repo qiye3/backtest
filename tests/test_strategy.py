@@ -23,10 +23,19 @@ from src.config import load_config
 from src.data.market_data import MarketData
 from src.plotter.backtest import _format_metric as format_factor_metric
 from src.plotter.strategy import _format_metric as format_strategy_metric
-from src.plotter.strategy import plot_strategy_backtest, plot_weight_deviation
+from src.plotter.strategy import plot_strategy_backtest
+from src.plotter.strategy_exposure import plot_strategy_risk_exposure
 from src.strategy.config import load_strategy
-from src.strategy.evaluation import calculate_weight_deviation
+from src.strategy.evaluation import (
+    calculate_concentration,
+    calculate_weight_deviation,
+)
+from src.strategy.exposure import (
+    calculate_industry_exposure,
+    calculate_style_exposure,
+)
 from src.strategy.io import load_strategy_targets, save_strategy_targets
+from strategies.yfd_growth100_factors.factor import _six_calendar_month_mean
 from strategies.yfd_growth100_factors.portfolio import CniGrowth100Portfolio
 
 
@@ -99,13 +108,11 @@ class StrategyTests(unittest.TestCase):
             "3.20x",
         )
 
-    def test_strategy_only_config_plots_distribution_without_sampling(
+    def test_strategy_only_config_skips_internal_factor_figures(
         self,
     ) -> None:
-        """策略评分分布不应依赖未启用的分组评价抽样配置。"""
-        config = load_config(
-            Path("strategies/yfd_growth100_factors/run.yaml")
-        )
+        """策略配置只输出策略回测图，不再绘制内部评分因子。"""
+        config = load_config(Path("strategies/yfd_growth100_factors/run.yaml"))
         plot_names = _remaining_factor_plot_names(
             config.raw["run"],
             config.raw["plots"],
@@ -138,19 +145,15 @@ class StrategyTests(unittest.TestCase):
                 plot_names=plot_names,
             )
 
-        self.assertEqual(plot_names, {"distribution"})
-        self.assertIsNone(
-            plot_factor.call_args.kwargs["evaluation_settings"]
-        )
+        self.assertEqual(plot_names, set())
+        plot_factor.assert_not_called()
 
     def test_strategy_config_can_reuse_factor_results_from_another_root(
         self,
     ) -> None:
         """关闭因子计算时应从独立结果根读取已有面板。"""
         source_config = yaml.safe_load(
-            Path("strategies/yfd_growth100_factors/run.yaml").read_text(
-                encoding="utf-8"
-            )
+            Path("strategies/yfd_growth100_factors/run.yaml").read_text(encoding="utf-8")
         )
         with TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
@@ -159,15 +162,14 @@ class StrategyTests(unittest.TestCase):
             source_config["run"]["factors"] = False
             source_config["run"]["strategy_simple_backtest"] = False
             source_config["run"]["plotter"] = False
+            source_config["strategy_analysis"]["enabled"] = False
             source_config["factors"] = {
                 "result_root": str(factor_result_root),
             }
             strategy_config_directory = Path(
                 "strategies/yfd_growth100_factors/strategy_configs"
             ).resolve()
-            source_config["strategies"]["config_directory"] = str(
-                strategy_config_directory
-            )
+            source_config["strategies"]["config_directory"] = str(strategy_config_directory)
             source_config["output"]["root"] = str(strategy_output_root)
             config_path = temporary_root / "run.yaml"
             config_path.write_text(
@@ -252,6 +254,63 @@ class StrategyTests(unittest.TestCase):
         np.testing.assert_allclose(targets.sum(axis=1), 1.0)
         self.assertLessEqual(targets.to_numpy().max(), 0.10 + 1e-12)
 
+    def test_growth100_excludes_missing_weight_data_before_top100(self) -> None:
+        """自由流通市值缺失的高分股票应在选股前退出候选池。"""
+        stock_codes = pd.Index(
+            [f"{stock_number:06d}.SZ" for stock_number in range(101)],
+            name="asset_code",
+        )
+        dates = pd.DatetimeIndex(["2024-02-08"], name="date")
+        signals = pd.DataFrame(
+            [np.arange(101, 0, -1, dtype=float)],
+            index=dates,
+            columns=stock_codes,
+        )
+        free_shares = pd.DataFrame(1.0, index=dates, columns=stock_codes)
+        free_shares.loc[dates[0], stock_codes[0]] = np.nan
+        market_data = _portfolio_market_data(
+            dates,
+            stock_codes,
+            free_shares=free_shares,
+        )
+        strategy = CniGrowth100Portfolio(
+            {
+                "name": "growth100",
+                "factor_name": "growth_score",
+                "benchmark_index": "000906.SH",
+                "params": {
+                    "top_n": 100,
+                    "max_replacements": 50,
+                    "tilt_strength": 1.0,
+                    "max_weight": 0.10,
+                },
+            }
+        )
+
+        targets = strategy.build_target_weights(signals, market_data, dates)
+
+        selected_members = targets.iloc[0].loc[lambda values: values > 0].index
+        self.assertEqual(len(selected_members), 100)
+        self.assertNotIn(stock_codes[0], selected_members)
+        self.assertIn(stock_codes[-1], selected_members)
+        np.testing.assert_allclose(targets.sum(axis=1), 1.0)
+
+    def test_growth100_uses_exact_six_calendar_month_window(self) -> None:
+        """半年均值应按自然月边界滚动，而不是固定交易日数量。"""
+        dates = pd.DatetimeIndex(
+            ["2024-01-01", "2024-01-02", "2024-07-01", "2024-07-02"],
+            name="date",
+        )
+        daily_values = pd.DataFrame(
+            {"000001.SZ": [1.0, 3.0, 5.0, 7.0]},
+            index=dates,
+        )
+
+        six_month_mean = _six_calendar_month_mean(daily_values)
+
+        self.assertEqual(six_month_mean.loc["2024-07-01", "000001.SZ"], 3.0)
+        self.assertEqual(six_month_mean.loc["2024-07-02", "000001.SZ"], 5.0)
+
     def test_strategy_target_io_and_weight_deviation(self) -> None:
         dates = pd.DatetimeIndex(["2024-02-08", "2024-05-08"], name="date")
         target_weights = pd.DataFrame(
@@ -274,7 +333,6 @@ class StrategyTests(unittest.TestCase):
             target_weights,
             check_names=False,
         )
-
         benchmark_weights = pd.DataFrame(
             [[0.5, 0.5], [0.4, 0.6]],
             index=dates,
@@ -287,6 +345,71 @@ class StrategyTests(unittest.TestCase):
         np.testing.assert_allclose(deviation["active_share"], [0.1, 0.1])
         np.testing.assert_allclose(deviation["max_overweight"], [0.1, 0.1])
         np.testing.assert_allclose(deviation["max_underweight"], [-0.1, -0.1])
+
+        concentration = calculate_concentration(
+            target_weights,
+            benchmark_weights,
+        )
+        np.testing.assert_allclose(
+            concentration["effective_holdings"],
+            [1 / (0.6**2 + 0.4**2), 2.0],
+        )
+        np.testing.assert_allclose(
+            concentration["benchmark_effective_holdings"],
+            [2.0, 1 / (0.4**2 + 0.6**2)],
+        )
+
+    def test_industry_and_style_exposure_preserve_missing_information(self) -> None:
+        """行业缺失归入 UNKNOWN，风格缺失通过覆盖率而非零值表达。"""
+        dates = pd.DatetimeIndex(["2024-02-08"], name="date")
+        stock_codes = pd.Index(["000001.SZ", "000002.SZ"], name="asset_code")
+        target_weights = pd.DataFrame(
+            [[0.6, 0.4]],
+            index=dates,
+            columns=stock_codes,
+        )
+        benchmark_weights = pd.DataFrame(
+            [[0.5, 0.5]],
+            index=dates,
+            columns=stock_codes,
+        )
+        industries = pd.DataFrame(
+            [["CI1", None]],
+            index=dates,
+            columns=stock_codes,
+        )
+        industry_exposure = calculate_industry_exposure(
+            target_weights,
+            benchmark_weights,
+            industries,
+        )
+
+        self.assertEqual(
+            set(industry_exposure["industry_code"]),
+            {"CI1", "UNKNOWN"},
+        )
+        self.assertAlmostEqual(industry_exposure["portfolio_weight"].sum(), 1.0)
+        self.assertAlmostEqual(industry_exposure["benchmark_weight"].sum(), 1.0)
+        self.assertAlmostEqual(industry_exposure["active_weight"].sum(), 0.0)
+
+        style_exposures = pd.DataFrame(
+            [[1.0, np.nan]],
+            index=dates,
+            columns=pd.MultiIndex.from_product(
+                [["Size"], stock_codes],
+                names=["style_name", "asset_code"],
+            ),
+        )
+        style_exposure = calculate_style_exposure(
+            target_weights,
+            benchmark_weights,
+            style_exposures,
+            minimum_coverage=0.5,
+        ).iloc[0]
+        self.assertEqual(style_exposure["portfolio_exposure"], 1.0)
+        self.assertEqual(style_exposure["benchmark_exposure"], 1.0)
+        self.assertAlmostEqual(style_exposure["portfolio_coverage"], 0.6)
+        self.assertAlmostEqual(style_exposure["benchmark_coverage"], 0.5)
 
     def test_weight_backtests_and_strategy_figures(self) -> None:
         market_data = _backtest_market_data()
@@ -365,9 +488,7 @@ class StrategyTests(unittest.TestCase):
             account_group["curves"]["all"]["gross_nav"],
             gross_account_group["curves"]["all"]["nav"],
         )
-        lean_account_group = lean_account_result["periods"][1]["groups"][
-            "strategy"
-        ]
+        lean_account_group = lean_account_result["periods"][1]["groups"]["strategy"]
         self.assertTrue(lean_account_group["trades"].empty)
         self.assertTrue(lean_account_group["holdings"].empty)
         pd.testing.assert_frame_equal(
@@ -393,16 +514,44 @@ class StrategyTests(unittest.TestCase):
                 backtest_settings=settings,
                 benchmark_index="000906.SH",
             )
-            deviation_paths = plot_weight_deviation(
+            concentration = calculate_concentration(
+                target_weights,
+                benchmark_weights,
+            )
+            industries = pd.DataFrame(
+                [["CI1", "CI2"]] * len(rebalance_index),
+                index=rebalance_index,
+                columns=target_weights.columns,
+            )
+            industry_exposure = calculate_industry_exposure(
+                target_weights,
+                benchmark_weights,
+                industries,
+            )
+            style_values = pd.DataFrame(
+                [[-1.0, 1.0]] * len(rebalance_index),
+                index=rebalance_index,
+                columns=pd.MultiIndex.from_product(
+                    [["Size"], target_weights.columns],
+                    names=["style_name", "asset_code"],
+                ),
+            )
+            style_exposure = calculate_style_exposure(
+                target_weights,
+                benchmark_weights,
+                style_values,
+            )
+            exposure_paths = plot_strategy_risk_exposure(
                 strategy_name="demo",
-                target_weights=target_weights,
-                benchmark_weights=benchmark_weights,
+                concentration=concentration,
+                industry_exposure=industry_exposure,
+                style_exposure=style_exposure,
                 settings=plot_settings,
-                output_stem=output_root / "deviation",
+                output_stem=output_root / "risk_exposure",
                 rebalance_label="quarterly-1",
             )
             self.assertTrue(all(path.exists() for path in strategy_paths))
-            self.assertTrue(all(path.exists() for path in deviation_paths))
+            self.assertTrue(all(path.exists() for path in exposure_paths))
 
     def test_weight_backtest_batch_prepares_price_context_once(self) -> None:
         """多策略批量回测应共享同一价格上下文。"""
@@ -443,12 +592,14 @@ class StrategyTests(unittest.TestCase):
 def _portfolio_market_data(
     dates: pd.DatetimeIndex,
     stock_codes: pd.Index,
+    free_shares: pd.DataFrame | None = None,
 ) -> MarketData:
     """构造只包含成长100权重规则所需字段的市场数据。"""
-    free_shares = pd.DataFrame(1.0, index=dates, columns=stock_codes)
+    if free_shares is None:
+        free_shares = pd.DataFrame(1.0, index=dates, columns=stock_codes)
     close_prices = pd.DataFrame(10.0, index=dates, columns=stock_codes)
     source_panels = {
-        "free_float": _source_panel({"S_SHARE_FREESHARES": free_shares}),
+        "stock_valuation": _source_panel({"FREE_SHARES_TODAY": free_shares}),
         "stock_quote": _source_panel({"S_DQ_CLOSE": close_prices}),
     }
     membership = pd.DataFrame(True, index=dates, columns=stock_codes)

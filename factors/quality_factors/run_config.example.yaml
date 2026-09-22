@@ -3,7 +3,7 @@ run:
   group_return: true
   simple_backtest: false
   account_backtest: false
-  plotter: true
+  plotter: false
   max_workers: 4
   refresh_market_data: false
   strategies: false
@@ -226,6 +226,14 @@ plots:
   distribution:
     bins: 300
     overall_bins: 50
+  overall:
+    factor_distribution_grid:
+      enabled: true
+      columns: 5
+    group_return_grid:
+      enabled: true
+      columns: 5
+      share_y_axis: true
   simple:
     enabled: false
   account:

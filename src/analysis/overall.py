@@ -176,6 +176,7 @@ def _factor_ic_summary(
                     "factor_name": factor_name,
                     "horizon_value": row.horizon_value,
                     "horizon_unit": row.horizon_unit,
+                    "target_type": getattr(row, "target_type", "stock_return"),
                     "rank_ic_mean": row.rank_ic_mean,
                 }
             )
@@ -191,18 +192,26 @@ def _factor_return_summary(
         ordered_groups = core_group_ids(result["definitions"])
         low_group = ordered_groups[0]
         high_group = ordered_groups[-1]
-        summary = result["summary"].pivot(
-            index=["horizon_value", "horizon_unit"],
+        summary_table = result["summary"].copy()
+        if "target_type" not in summary_table:
+            summary_table["target_type"] = "stock_return"
+        summary = summary_table.pivot(
+            index=["horizon_value", "horizon_unit", "target_type"],
             columns="group_id",
             values="group_return",
         )
         high_minus_low = summary[high_group] - summary[low_group]
-        for (horizon_value, horizon_unit), factor_return in high_minus_low.items():
+        for (
+            horizon_value,
+            horizon_unit,
+            target_type,
+        ), factor_return in high_minus_low.items():
             records.append(
                 {
                     "factor_name": factor_name,
                     "horizon_value": horizon_value,
                     "horizon_unit": horizon_unit,
+                    "target_type": target_type,
                     "high_minus_low_return": factor_return,
                 }
             )

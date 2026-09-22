@@ -1,0 +1,7 @@
+name: price_position_60d
+implementation:
+  module: src.factors.PriceVolumeFactor
+  class: PriceVolumeFactor
+params:
+  formula: price_position
+  window: 60

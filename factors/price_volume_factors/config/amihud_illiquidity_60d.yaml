@@ -1,0 +1,7 @@
+name: amihud_illiquidity_60d
+implementation:
+  module: src.factors.PriceVolumeFactor
+  class: PriceVolumeFactor
+params:
+  formula: amihud_illiquidity
+  window: 60

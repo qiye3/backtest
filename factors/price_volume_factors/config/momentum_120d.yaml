@@ -1,0 +1,7 @@
+name: momentum_120d
+implementation:
+  module: src.factors.PriceVolumeFactor
+  class: PriceVolumeFactor
+params:
+  formula: momentum
+  window: 120

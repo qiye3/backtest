@@ -15,14 +15,14 @@ STRATEGIES_STAGING_NAME = "factor-backtest_strategies_upload"
 
 SKILL_MD = """---
 name: factor-backtest
-description: 运行 YAML 驱动的 A 股因子评价和策略回测框架。用于接入外部因子或策略包，计算因子后处理、行业中性化、基准超额收益分组、IC、整体评价、simple/account 回测和 PIT 指数成份股票池。
+description: 运行 YAML 驱动的 A 股因子评价和指数增强策略回测。用于接入配套 Factors 或 Strategies 包，执行 PIT 股票池、因子后处理、超额收益分组、overall 评价和策略回测。
 ---
 
 # Factor Backtest
 
-本 Skill 只包含通用框架，不包含具体 factors 配置或策略。配套 Factors 包提供 Growth、Quality、Value 三组正式因子；配套 Strategies 包提供 yfd100。
+本 Skill 只包含通用框架，不包含具体因子配置或策略。配套 Factors 包提供 Growth、Quality、Value、First Batch、Second Batch；配套 Strategies 包提供 yfd100 和 roadshow_indices。
 
-## 三组因子实验
+## 五组因子实验
 
 先确认数据根包含历史成份与中信行业文件：
 
@@ -40,31 +40,40 @@ python3 scripts/run_all_factor_backtests.py \\
   --dry-run
 ```
 
-去掉 `--dry-run` 后固定按 Growth、Quality、Value 顺序运行。脚本先按三组字段并集刷新一次共享市场缓存，随后三组只读复用。正式默认运行 factors、group return、overall、simple 回测及对应绘图；account 回测关闭。
+去掉 `--dry-run` 后固定按 Growth、Quality、Value、First Batch、Second Batch 顺序运行。脚本先按五组字段并集刷新一次共享市场缓存，随后五组只读复用。因子实验只运行 factors、group return 和 overall evaluation；simple/account 回测与单因子绘图关闭。
+
+`00_overall/` 输出因子相关性、IC 分布、因子收益分布、因子分布总图和四周分组收益总图。每个因子目录不生成 `figures/`。
 
 每个因子公式只计算一次，随后先做 YAML 指定的截面 rank 或 1%–99% winsorize，再输出 `__raw` 和 `__industry_neutral`。行业中性版本按评价日 CITICS 历史行业去均值；收益目标先对个股原始未来收益做行业去均值，再减同期基准收益。
 
-## 单独运行 yfd100
+## 指数增强策略
 
 在 Strategies 包根目录执行：
 
 ```bash
-python3 scripts/run_yfd100.py \\
+python3 scripts/run_strategy_backtests.py \\
   --framework-root /absolute/path/to/unpacked-skill \\
   --data-root /absolute/path/to/data \\
   --output-root /absolute/path/to/results \\
+  --suite all \\
   --dry-run
 ```
 
-yfd100 默认启用策略 simple 回测，account 回测关闭。
+`--suite` 可选 `all`、`yfd100`、`roadshow`。策略默认启用 simple 回测和策略图，account 回测关闭；不输出策略内部因子的研究图。
 
 复用其他实验已经保存的 `factor.parquet` 时，将 `run.factors` 设为 `false`，并通过 `factors.result_root` 指向原实验输出根；策略结果仍写入当前 `output.root`。
 
-## 直接运行框架
+## tmux 与日志
+
+去掉 `--dry-run` 后，正式入口默认建立独立 tmux session。日志写入 `<output-root>/log/`；成功运行后删除本次日志，失败或中断时保留。启动输出会给出 session、日志路径和 attach 命令。
+
+本机没有 tmux 时应明确失败。只有明确需要占用当前终端时才使用 `--foreground`。
+
+## 直接运行任意配置
 
 ```bash
-PYTHONPATH=/absolute/path/to/skill/code:/absolute/path/to/external-package \\
-python3 -m src.cli --config /absolute/path/to/run.yaml
+PYTHONPATH=/absolute/path/to/external-package \\
+python3 scripts/run_factor_config.py --config /absolute/path/to/run.yaml
 ```
 
 不要把数据、缓存、输出或具体因子配置写入 Skill 包。
@@ -78,11 +87,12 @@ OPENAI_YAML = """interface:
 
 REFERENCE_MD = """# Output reference
 
-- 每个因子目录：`factor.parquet`、可选的 `group_return.parquet` 与 figures。
-- 根目录汇总：`factor_summary_daily.csv`、`factor_summary_weekly.csv`。
-- `00_overall/`：`factor_correlation.csv`、`factor_ic.csv`、`factor_return.csv` 及对应图。
+- 每个因子目录：`factor.parquet` 与按保留设置保存的 `group_return.parquet`；不生成 `figures/`。
+- `summaries/`：`factor_summary_daily.csv`、`factor_summary_weekly.csv`。
+- `00_overall/`：三张 overall CSV、基础三图、因子分布总图与四周分组收益总图。
 - 正式 group return 周期：1、2、4、8 周。
-- 预留回测周期：1、4 周；simple 股票数不足时持有现金。
+- 因子 simple/account 回测默认关闭；预留周期为 1、4 周。
+- 指数增强策略 simple 回测默认开启并输出策略图；account 默认关闭。
 """
 
 
@@ -149,7 +159,12 @@ def _build_skill(staging: Path) -> None:
     )
     _copy_tree(PROJECT_ROOT / "src", staging / "code" / "src")
     (staging / "code" / "src" / "factors" / "PriceVolumeFactor.py").unlink()
-    for script_name in ("run_all_factor_backtests.py", "sync_index_members.py"):
+    for script_name in (
+        "run_all_factor_backtests.py",
+        "run_factor_config.py",
+        "sync_index_members.py",
+        "tmux_runner.py",
+    ):
         shutil.copy2(
             PROJECT_ROOT / "scripts" / script_name,
             staging / "scripts" / script_name,
@@ -164,7 +179,13 @@ def _build_factors(staging: Path) -> None:
             PROJECT_ROOT / "factors" / file_name,
             factors_destination / file_name,
         )
-    for group_name in ("growth_factors", "quality_factors", "value_factors"):
+    for group_name in (
+        "growth_factors",
+        "quality_factors",
+        "value_factors",
+        "first_batch_factors",
+        "second_batch_factors",
+    ):
         _copy_tree(
             PROJECT_ROOT / "factors" / group_name,
             factors_destination / group_name,

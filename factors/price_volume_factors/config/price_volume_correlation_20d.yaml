@@ -1,0 +1,7 @@
+name: price_volume_correlation_20d
+implementation:
+  module: src.factors.PriceVolumeFactor
+  class: PriceVolumeFactor
+params:
+  formula: price_volume_correlation
+  window: 20

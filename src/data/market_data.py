@@ -38,6 +38,7 @@ class MarketData:
     - calendar：由基准指数行情确定的交易日日历。
     - membership：中证800与中证1000逐日历史成份并集。
     - benchmark_index：回测基准指数 Wind 代码。
+    - cache_directory：来源缓存和全周期派生缓存共用的目录；内存测试可省略。
 
     输出：
     - 该类实例向下游公开 ``calendar``、``membership``、``benchmark_index`` 和
@@ -55,6 +56,7 @@ class MarketData:
         calendar: pd.DatetimeIndex,
         membership: pd.DataFrame,
         benchmark_index: str,
+        cache_directory: Path | None = None,
     ) -> None:
         """
         初始化可供下游直接读取的市场数据对象。
@@ -64,6 +66,7 @@ class MarketData:
         - calendar：所有来源共享的交易日索引。
         - membership：日期乘股票的布尔研究股票池。
         - benchmark_index：用于构造日历和回测对照的基准指数代码。
+        - cache_directory：共享市场缓存目录；为空时派生数据只在内存中计算。
 
         输出：
         - 无返回值；参数保存为实例状态。
@@ -76,6 +79,7 @@ class MarketData:
         self.calendar = calendar
         self.membership = membership
         self.benchmark_index = benchmark_index
+        self.cache_directory = cache_directory
 
     # 根据 YAML 配置读取缓存或构建完整市场数据对象。
     @classmethod
@@ -193,6 +197,7 @@ class MarketData:
             calendar=trading_calendar,
             membership=membership,
             benchmark_index=benchmark_index,
+            cache_directory=cache_directory,
         )
 
     # 从来源缓存中切出指定字段的标准二维面板。
@@ -220,7 +225,7 @@ class MarketData:
         - 先选择来源级 MultiIndex 的 ``field`` 层，再按需选择 ``index_code`` 层。
         - 下游不需要了解每来源一个 Parquet 的内部列组织方式。
         """
-        if DATA_SOURCE_SPECS[source_name].kind == "records":
+        if source_name != MEMBERSHIP_SOURCE and DATA_SOURCE_SPECS[source_name].kind == "records":
             raise ValueError(f"明细来源应使用 get_records: {source_name}")
         source_panel = self._source_panels[source_name]
         field_panel = source_panel.xs(
@@ -242,9 +247,7 @@ class MarketData:
             raise ValueError(f"该来源不使用 index_code: {source_name}")
         if "forecast_year_offset" in field_panel.columns.names:
             if forecast_year_offset is None:
-                raise ValueError(
-                    f"该来源必须指定 forecast_year_offset: {source_name}"
-                )
+                raise ValueError(f"该来源必须指定 forecast_year_offset: {source_name}")
             field_panel = field_panel.xs(
                 forecast_year_offset,
                 axis=1,
@@ -252,9 +255,7 @@ class MarketData:
                 drop_level=True,
             )
         elif forecast_year_offset is not None:
-            raise ValueError(
-                f"该来源不使用 forecast_year_offset: {source_name}"
-            )
+            raise ValueError(f"该来源不使用 forecast_year_offset: {source_name}")
         return field_panel
 
     def get_records(self, source_name: str) -> pd.DataFrame:
@@ -278,6 +279,7 @@ class MarketData:
 
 
 # ===================== YAML 配置边界 ===================== #
+
 
 # 读取并校验构建 MarketData 必需的配置内容。
 def _read_market_data_config(config_path: Path) -> dict[str, Any]:
@@ -333,10 +335,7 @@ def _validate_market_data_config(market_data_config: Mapping[str, Any]) -> None:
     if start_date > end_date:
         raise ValueError("market_data.start_date 不能晚于 end_date")
 
-    universe_indices = {
-        str(index_code)
-        for index_code in market_data_config["universe_indices"]
-    }
+    universe_indices = {str(index_code) for index_code in market_data_config["universe_indices"]}
     if universe_indices != REQUIRED_UNIVERSE_INDICES:
         raise ValueError("universe_indices 必须是 000906.SH 与 000852.SH")
 
@@ -349,10 +348,7 @@ def _validate_market_data_config(market_data_config: Mapping[str, Any]) -> None:
     if "S_DQ_CLOSE" not in index_price_config["fields"]:
         raise ValueError("index_price 必须包含 S_DQ_CLOSE")
     benchmark_index = str(market_data_config["benchmark_index"])
-    index_price_codes = {
-        str(index_code)
-        for index_code in index_price_config["codes"]
-    }
+    index_price_codes = {str(index_code) for index_code in index_price_config["codes"]}
     if benchmark_index not in index_price_codes:
         raise ValueError("index_price.codes 必须包含 benchmark_index")
 
@@ -383,8 +379,7 @@ def _validate_market_data_config(market_data_config: Mapping[str, Any]) -> None:
                     or any(not isinstance(offset, int) for offset in forecast_offsets)
                 ):
                     raise ValueError(
-                        "forecast_year_offsets 必须是非空且不重复的整数列表: "
-                        f"{source_name}"
+                        f"forecast_year_offsets 必须是非空且不重复的整数列表: {source_name}"
                     )
 
 
@@ -407,9 +402,7 @@ def _source_metadata(
     """把会影响来源缓存内容的配置规范为可持久化 metadata。"""
     filters = {
         str(filter_name): str(filter_value)
-        for filter_name, filter_value in sorted(
-            source_config.get("filters", {}).items()
-        )
+        for filter_name, filter_value in sorted(source_config.get("filters", {}).items())
     }
     forecast_year_offsets = _configured_forecast_offsets(source_config)
 
@@ -450,9 +443,7 @@ def _prepare_source_cache(
         return None, dict(requested_metadata), True
 
     semantic_conflicts = [
-        key
-        for key in SEMANTIC_METADATA_KEYS
-        if cached_metadata.get(key) != requested_metadata[key]
+        key for key in SEMANTIC_METADATA_KEYS if cached_metadata.get(key) != requested_metadata[key]
     ]
     if semantic_conflicts:
         if refresh:
@@ -493,8 +484,7 @@ def _prepare_source_cache(
         for key in ("start_date", "end_date", "fields", "codes")
     )
     needs_expansion |= (
-        requested_offsets is not None
-        and build_metadata["forecast_year_offsets"] != cached_offsets
+        requested_offsets is not None and build_metadata["forecast_year_offsets"] != cached_offsets
     )
     rebuild = refresh or needs_expansion
     if rebuild:
@@ -520,6 +510,7 @@ def _build_source_config(
 
 
 # ===================== 基准日历和历史股票池 ===================== #
+
 
 def _load_index_price_panel(
     data_root: Path,
@@ -609,9 +600,7 @@ def _load_membership_panel(
         refresh=refresh,
     )
     if not rebuild:
-        universe_codes = tuple(
-            cached_panel.columns.get_level_values("asset_code").unique()
-        )
+        universe_codes = tuple(cached_panel.columns.get_level_values("asset_code").unique())
         return cached_panel, universe_codes
 
     member_intervals = load_index_members(data_root, universe_indices)
@@ -646,14 +635,19 @@ def _merge_universe_membership(
         level="field",
         drop_level=True,
     )
-    membership = index_membership.T.groupby(
-        level="asset_code",
-        sort=False,
-    ).any().T
+    membership = (
+        index_membership.T.groupby(
+            level="asset_code",
+            sort=False,
+        )
+        .any()
+        .T
+    )
     return membership.reindex(columns=universe_codes).astype(bool)
 
 
 # ===================== 其他配置来源 ===================== #
+
 
 def _load_or_build_source_data(
     data_root: Path,
@@ -750,24 +744,18 @@ def _slice_source_data(
     if source_name in DATA_SOURCE_SPECS:
         if DATA_SOURCE_SPECS[source_name].kind == "financial":
             output_fields.append("REPORT_PERIOD")
-    column_mask = source_panel.columns.get_level_values("field").isin(
-        output_fields
-    )
+    column_mask = source_panel.columns.get_level_values("field").isin(output_fields)
     requested_codes = tuple(str(code) for code in source_config.get("codes", ()))
     if requested_codes and "index_code" in source_panel.columns.names:
-        column_mask &= source_panel.columns.get_level_values("index_code").isin(
-            requested_codes
-        )
+        column_mask &= source_panel.columns.get_level_values("index_code").isin(requested_codes)
     elif requested_codes and "asset_code" in source_panel.columns.names:
-        column_mask &= source_panel.columns.get_level_values("asset_code").isin(
-            requested_codes
-        )
+        column_mask &= source_panel.columns.get_level_values("asset_code").isin(requested_codes)
     sliced_panel = source_panel.loc[trading_calendar, column_mask]
     if "forecast_year_offsets" in source_config:
         requested_offsets = source_config["forecast_year_offsets"]
-        offset_mask = sliced_panel.columns.get_level_values(
-            "forecast_year_offset"
-        ).isin(requested_offsets)
+        offset_mask = sliced_panel.columns.get_level_values("forecast_year_offset").isin(
+            requested_offsets
+        )
         return sliced_panel.loc[:, offset_mask]
     if (
         "forecast_year_offset" in source_config
@@ -802,7 +790,5 @@ def _slice_source_records(
         for column_name in ("asset_code", "source_date", "report_period")
         if column_name in sliced_records.columns
     ]
-    output_columns = list(
-        dict.fromkeys([*standard_columns, *source_config["fields"]])
-    )
+    output_columns = list(dict.fromkeys([*standard_columns, *source_config["fields"]]))
     return sliced_records.loc[:, output_columns].reset_index(drop=True)

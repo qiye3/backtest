@@ -1,0 +1,7 @@
+name: downside_volatility_60d
+implementation:
+  module: src.factors.PriceVolumeFactor
+  class: PriceVolumeFactor
+params:
+  formula: downside_volatility
+  window: 60

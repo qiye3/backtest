@@ -1,0 +1,26 @@
+name: quarterly_revenue__qtile8
+implementation:
+  module: factors.growth_factors.code.GrowthFactor
+  class: GrowthFactor
+params:
+  base_factor: quarterly_revenue
+  operator: qtile8
+  rolling_mean_window: 1
+  min_periods: 1
+  neutralize: false
+  winsorize:
+    min_quantile: 0.0
+    max_quantile: 1.0
+  reverse: false
+postprocess:
+  cross_section:
+    method: rank
+variants:
+- suffix: raw
+  neutralization:
+    method: none
+- suffix: industry_neutral
+  neutralization:
+    method: industry_demean
+    source: industry_history
+    field: ind_class_code

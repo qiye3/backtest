@@ -290,7 +290,7 @@ def _plot_correlation_heatmap(
 ) -> list[Path]:
     """绘制逐日横截面 Spearman 相关的时间均值。"""
     factor_count = len(correlation)
-    figure_size = max(settings["width"], 4.0 + factor_count * 0.45)
+    figure_size = min(30.0, max(settings["width"], 4.0 + factor_count * 0.18))
     figure, axis = plt.subplots(
         figsize=(figure_size, figure_size * 0.8),
         layout="constrained",
@@ -305,17 +305,18 @@ def _plot_correlation_heatmap(
     axis.set_xticks(np.arange(factor_count), correlation.columns, rotation=45, ha="right")
     axis.set_yticks(np.arange(factor_count), correlation.index)
     axis.set_title("Mean daily cross-sectional Spearman correlation", fontsize=13)
-    for row_position in range(factor_count):
-        for column_position in range(factor_count):
-            correlation_value = correlation.iat[row_position, column_position]
-            axis.text(
-                column_position,
-                row_position,
-                f"{correlation_value:.2f}",
-                horizontalalignment="center",
-                verticalalignment="center",
-                fontsize=7,
-            )
+    if factor_count <= 40:
+        for row_position in range(factor_count):
+            for column_position in range(factor_count):
+                correlation_value = correlation.iat[row_position, column_position]
+                axis.text(
+                    column_position,
+                    row_position,
+                    f"{correlation_value:.2f}",
+                    horizontalalignment="center",
+                    verticalalignment="center",
+                    fontsize=7,
+                )
     figure.colorbar(image, ax=axis, shrink=0.8, label="Spearman correlation")
     return save_figure(figure, output_stem, settings)
 
@@ -330,7 +331,10 @@ def _plot_factor_distribution(
     basis_points: bool = False,
 ) -> list[Path]:
     """按未来周期分面绘制每因子一个汇总值的直方图。"""
-    horizons = summary[["horizon_value", "horizon_unit"]].drop_duplicates()
+    facet_columns = ["horizon_value", "horizon_unit"]
+    if "target_type" in summary:
+        facet_columns.append("target_type")
+    horizons = summary[facet_columns].drop_duplicates()
     figure, axes = plt.subplots(
         len(horizons),
         1,
@@ -343,22 +347,27 @@ def _plot_factor_distribution(
     )
     figure.suptitle(title, fontsize=13, fontweight="bold")
     for axis, horizon in zip(axes[:, 0], horizons.itertuples(index=False)):
-        horizon_values = summary.loc[
+        selected = (
             (summary["horizon_value"] == horizon.horizon_value)
-            & (summary["horizon_unit"] == horizon.horizon_unit),
-            value_column,
-        ].dropna()
+            & (summary["horizon_unit"] == horizon.horizon_unit)
+        )
+        target_type = getattr(horizon, "target_type", None)
+        if target_type is not None:
+            selected &= summary["target_type"] == target_type
+        horizon_values = summary.loc[selected, value_column].dropna()
         plot_values = horizon_values * 10_000 if basis_points else horizon_values
-        bin_count = min(20, max(5, int(np.ceil(np.sqrt(len(plot_values))))))
         axis.hist(
             plot_values,
-            bins=bin_count,
+            bins=settings["distribution"]["overall_bins"],
             color="#5B7FA3",
             edgecolor="white",
             alpha=0.9,
         )
         axis.axvline(plot_values.mean(), color="#C23B32", linewidth=1.4)
-        axis.set_title(_horizon_label(horizon.horizon_value, horizon.horizon_unit))
+        facet_title = _horizon_label(horizon.horizon_value, horizon.horizon_unit)
+        if target_type is not None:
+            facet_title = f"{facet_title} · {target_type}"
+        axis.set_title(facet_title)
         axis.set_xlabel(x_label)
         axis.set_ylabel("Factor count")
         axis.text(

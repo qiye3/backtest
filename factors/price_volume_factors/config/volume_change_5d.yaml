@@ -1,0 +1,7 @@
+name: volume_change_5d
+implementation:
+  module: src.factors.PriceVolumeFactor
+  class: PriceVolumeFactor
+params:
+  formula: volume_change
+  window: 5
