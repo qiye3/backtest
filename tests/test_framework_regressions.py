@@ -10,7 +10,9 @@ from unittest.mock import patch
 import pandas as pd
 import yaml
 
-from src.config import _complete_strategy_market_data_sources
+from src.config import _complete_strategy_market_data_sources, load_config
+from src.factors.config import load_factors
+from src.strategy.config import load_strategies
 from src.strategy.io import load_strategy_targets, save_strategy_targets
 from strategies.roadshow_indices.portfolio import MarketValuePortfolio
 
@@ -50,6 +52,29 @@ def test_strategy_dependencies_are_added_from_strategy_configs() -> None:
     assert sources["index_weights_monthly"] == {
         "codes": ["000300.SH"],
         "fields": ["I_WEIGHT"],
+    }
+
+
+def test_combined_strategy_suite_loads_six_peer_strategies() -> None:
+    """默认套件应在同一配置层级加载成长100与其他五个策略。"""
+    config = load_config(Path("strategies/roadshow_indices/run.yaml"))
+
+    factor_names = {
+        factor.name for factor in load_factors(config.factor_config_directory)
+    }
+    strategy_names = {
+        strategy.name
+        for strategy in load_strategies(config.strategy_config_directory)
+    }
+
+    assert len(factor_names) == 6
+    assert strategy_names == {
+        "cni_growth100",
+        "cni_value100",
+        "cni_free_cashflow",
+        "csi500_quality_growth",
+        "csi_dividend_low_volatility100",
+        "csi_technology_top",
     }
 
 

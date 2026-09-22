@@ -1,0 +1,17 @@
+name: cni_value100
+factor_name: cni_value100_score
+implementation:
+  module: strategies.roadshow_indices.portfolio
+  class: ScoreTiltedFreeFloatPortfolio
+benchmark_index: 000906.SH
+rebalance:
+  frequency: quarterly
+  intervals: [1]
+  months: [3, 6, 9, 12]
+  date_rule: second_friday_next_trading_day
+params:
+  top_n: 100
+  max_replacements: 50
+  tilt_strength: 1.0
+  max_weight: 0.08
+  max_industry_weight: 0.20

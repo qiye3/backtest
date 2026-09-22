@@ -176,11 +176,23 @@ def _build_strategies(staging: Path) -> None:
         PROJECT_ROOT / "strategies",
         staging / "strategies",
     )
+    factors_destination = staging / "factors"
+    factors_destination.mkdir()
+    for file_name in ("__init__.py", "fundamental_utils.py"):
+        shutil.copy2(
+            PROJECT_ROOT / "factors" / file_name,
+            factors_destination / file_name,
+        )
     (staging / "scripts").mkdir()
-    shutil.copy2(
-        PROJECT_ROOT / "scripts" / "run_yfd100.py",
-        staging / "scripts" / "run_yfd100.py",
-    )
+    for script_name in (
+        "run_strategy_backtests.py",
+        "run_yfd100.py",
+        "tmux_runner.py",
+    ):
+        shutil.copy2(
+            PROJECT_ROOT / "scripts" / script_name,
+            staging / "scripts" / script_name,
+        )
 
 
 def _write_zip(staging: Path, zip_path: Path) -> None:

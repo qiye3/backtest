@@ -1,0 +1,16 @@
+name: csi500_quality_growth
+factor_name: csi500_quality_growth_score
+implementation:
+  module: strategies.roadshow_indices.portfolio
+  class: ScoreTiltedFreeFloatPortfolio
+benchmark_index: 000906.SH
+rebalance:
+  frequency: quarterly
+  intervals: [1]
+  months: [6, 12]
+  date_rule: second_friday_next_trading_day
+params:
+  top_n: 100
+  tilt_strength: 1.0
+  max_weight: 0.10
+  max_industry_weight: 0.25

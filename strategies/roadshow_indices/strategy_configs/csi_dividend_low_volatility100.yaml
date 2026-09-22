@@ -1,0 +1,14 @@
+name: csi_dividend_low_volatility100
+factor_name: csi_dividend_low_volatility100_score
+implementation:
+  module: strategies.roadshow_indices.portfolio
+  class: DividendVolatilityPortfolio
+benchmark_index: 000906.SH
+rebalance:
+  frequency: quarterly
+  intervals: [1]
+  months: [3, 6, 9, 12]
+  date_rule: second_friday_next_trading_day
+params:
+  top_n: 100
+  max_industry_weight: 0.20

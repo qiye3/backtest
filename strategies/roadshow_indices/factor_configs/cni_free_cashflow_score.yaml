@@ -1,0 +1,4 @@
+name: cni_free_cashflow_score
+implementation:
+  module: strategies.roadshow_indices.factor
+  class: CniFreeCashFlowFactor

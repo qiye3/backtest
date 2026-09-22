@@ -1,0 +1,4 @@
+name: csi500_quality_growth_score
+implementation:
+  module: strategies.roadshow_indices.factor
+  class: Csi500QualityGrowthFactor

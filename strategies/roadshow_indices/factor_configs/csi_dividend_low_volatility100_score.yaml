@@ -1,0 +1,4 @@
+name: csi_dividend_low_volatility100_score
+implementation:
+  module: strategies.roadshow_indices.factor
+  class: CsiDividendLowVolatility100Factor

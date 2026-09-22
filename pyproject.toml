@@ -21,10 +21,15 @@ dependencies = [
 dev = ["ruff>=0.8"]
 
 [tool.setuptools.packages.find]
-include = ["examples*", "src*", "strategies*"]
+include = ["examples*", "factors*", "src*", "strategies*"]
 
 [tool.setuptools.package-data]
 "strategies.yfd_growth100_factors" = [
+  "*.yaml",
+  "factor_configs/*.yaml",
+  "strategy_configs/*.yaml",
+]
+"strategies.roadshow_indices" = [
   "*.yaml",
   "factor_configs/*.yaml",
   "strategy_configs/*.yaml",

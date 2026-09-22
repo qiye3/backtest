@@ -1,0 +1,4 @@
+name: csi_technology_top_score
+implementation:
+  module: strategies.roadshow_indices.factor
+  class: CsiTechnologyTopFactor

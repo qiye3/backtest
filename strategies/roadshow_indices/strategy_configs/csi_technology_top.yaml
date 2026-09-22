@@ -1,0 +1,14 @@
+name: csi_technology_top
+factor_name: csi_technology_top_score
+implementation:
+  module: strategies.roadshow_indices.portfolio
+  class: MarketValuePortfolio
+benchmark_index: 000906.SH
+rebalance:
+  frequency: quarterly
+  intervals: [1]
+  months: [6, 12]
+  date_rule: second_friday_next_trading_day
+params:
+  top_n: 50
+  max_weight: 0.10

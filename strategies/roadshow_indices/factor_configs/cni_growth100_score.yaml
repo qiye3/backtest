@@ -1,0 +1,4 @@
+name: cni_growth100_score
+implementation:
+  module: strategies.yfd_growth100_factors.factor
+  class: CniGrowth100Factor
