@@ -17,6 +17,8 @@ factors:
 output:
   root: ../../outputs_growth
   save_backtest_details: false
+  save_parquet:
+    group_return: true
 market_data:
   source_root: /replace/with/factor/data/root
   cache_root: ../../data/growth_factors

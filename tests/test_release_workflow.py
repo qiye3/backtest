@@ -65,6 +65,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.assertTrue(
                 config["plots"]["overall"]["group_return_grid"]["enabled"]
             )
+            self.assertTrue(
+                config["output"]["save_parquet"]["group_return"]
+            )
 
     def test_factor_runner_overrides_templates_with_overall_only_mode(self) -> None:
         """一键入口应防止模板漂移重新打开因子回测或单因子图。"""
