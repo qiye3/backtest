@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from src.data.market_data import MarketData
-from src.factors.base import Factor
+from src.factors.base import Factor, HistoryRequirement
 
 
 class PriceVolumeFactor(Factor):
@@ -58,6 +58,16 @@ class PriceVolumeFactor(Factor):
         if formula not in calculators:
             raise ValueError(f"不支持的价量因子公式: {formula}")
         return calculators[formula]().replace([np.inf, -np.inf], np.nan)
+
+    def history_requirement(self) -> HistoryRequirement:
+        """价量滚动因子只需要最长窗口及收益差分前一日。"""
+        params = self.config["params"]
+        window = max(
+            int(params.get("window", 0)),
+            int(params.get("short_window", 0)),
+            int(params.get("long_window", 0)),
+        )
+        return HistoryRequirement(trading_days=window + 1)
 
 
 def _momentum(adjusted_close: pd.DataFrame, window: int) -> pd.DataFrame:

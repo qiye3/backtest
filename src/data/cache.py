@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -52,6 +53,17 @@ def load_source_data(
     return pd.read_parquet(cache_path)
 
 
+def load_financial_records(
+    cache_directory: Path,
+    source_name: str,
+) -> pd.DataFrame | None:
+    """读取财务来源的规范化事件记录；旧缓存没有伴随文件时返回空。"""
+    records_path = cache_directory / f"{source_name}.records.parquet"
+    if not records_path.exists():
+        return None
+    return pd.read_parquet(records_path)
+
+
 def save_source_cache(
     cache_directory: Path,
     source_name: str,
@@ -62,9 +74,27 @@ def save_source_cache(
     cache_directory.mkdir(parents=True, exist_ok=True)
     cache_path = cache_directory / f"{source_name}.parquet"
     metadata_path = cache_directory / f"{source_name}.meta.json"
-    source_data.to_parquet(cache_path)
-    metadata_path.write_text(
+    temporary_cache_path = cache_directory / f"{source_name}.tmp.parquet"
+    temporary_metadata_path = cache_directory / f"{source_name}.meta.json.tmp"
+    source_data.to_parquet(temporary_cache_path)
+    temporary_metadata_path.write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    os.replace(temporary_cache_path, cache_path)
+    os.replace(temporary_metadata_path, metadata_path)
     return cache_path
+
+
+def save_financial_records(
+    cache_directory: Path,
+    source_name: str,
+    financial_records: pd.DataFrame,
+) -> Path:
+    """保存财务公告事件，供报告期历史算子按 PIT 时点复原。"""
+    cache_directory.mkdir(parents=True, exist_ok=True)
+    records_path = cache_directory / f"{source_name}.records.parquet"
+    temporary_path = cache_directory / f"{source_name}.records.tmp.parquet"
+    financial_records.to_parquet(temporary_path)
+    os.replace(temporary_path, records_path)
+    return records_path

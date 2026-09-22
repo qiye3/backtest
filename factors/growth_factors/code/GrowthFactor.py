@@ -98,6 +98,7 @@ class GrowthFactor(Factor):
                 base_factor_panel.values,
                 base_factor_panel.report_periods,
                 self.params.operator,
+                base_factor_panel.quarterly_events,
             )
 
         if self.params.rolling_mean_window > 1 or self.params.min_periods > 1:

@@ -9,11 +9,21 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 import pandas as pd
 
 from src.data.market_data import MarketData
+
+
+@dataclass(frozen=True)
+class HistoryRequirement:
+    """描述增量计算一个输出日期前必须保留的历史范围。"""
+
+    trading_days: int = 0
+    calendar_days: int = 0
+    full_history: bool = False
 
 
 class Factor(ABC):
@@ -67,3 +77,7 @@ class Factor(ABC):
         - 输出对齐和动态股票池掩码由批量引擎统一完成，子类不重复处理。
         """
         raise NotImplementedError
+
+    def history_requirement(self) -> HistoryRequirement:
+        """返回增量重算所需历史；外部因子默认全历史以保证正确性。"""
+        return HistoryRequirement(full_history=True)

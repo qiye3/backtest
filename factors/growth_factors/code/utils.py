@@ -8,6 +8,8 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
+from factors.quarterly_history import apply_quarterly_event_operator
+
 FactorFrequency = Literal["daily", "quarterly"]
 
 
@@ -18,6 +20,7 @@ class BaseFactorPanel:
     values: pd.DataFrame
     frequency: FactorFrequency
     report_periods: pd.DataFrame | None = None
+    quarterly_events: pd.DataFrame | None = None
 
 
 def state_event_positions(
@@ -289,10 +292,25 @@ def apply_quarterly_operator(
     factor_values: pd.DataFrame,
     report_periods: pd.DataFrame,
     operator_name: str,
+    quarterly_events: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """按每只股票自己的报告季度历史应用季频算子。"""
     if operator_name == "raw":
         return factor_values.copy()
+    if quarterly_events is not None:
+        return apply_quarterly_event_operator(
+            quarterly_events=quarterly_events,
+            calendar=factor_values.index,
+            asset_codes=factor_values.columns,
+            calculator=lambda values_by_quarter, report_quarter, current_value: (
+                calculate_quarterly_operator_value(
+                    values_by_quarter,
+                    report_quarter,
+                    current_value,
+                    operator_name,
+                )
+            ),
+        )
 
     transformed_panel = pd.DataFrame(
         np.nan,

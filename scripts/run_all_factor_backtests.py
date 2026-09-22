@@ -190,7 +190,7 @@ def main() -> None:
     from src.cli import run
     from src.data.market_data import MarketData
 
-    shared_market_data = MarketData.from_yaml(market_path, refresh=True)
+    shared_market_data = MarketData.from_yaml(market_path, refresh=False)
     for experiment_name, run_config in run_configs.items():
         print(f"[{experiment_name}] 开始实验", flush=True)
         run(

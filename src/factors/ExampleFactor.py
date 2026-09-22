@@ -11,7 +11,7 @@ from __future__ import annotations
 import pandas as pd
 
 from src.data.market_data import MarketData
-from src.factors.base import Factor
+from src.factors.base import Factor, HistoryRequirement
 
 
 class ExampleFactor(Factor):
@@ -54,4 +54,10 @@ class ExampleFactor(Factor):
         return adjusted_close.pct_change(
             periods=lookback_days,
             fill_method=None,
+        )
+
+    def history_requirement(self) -> HistoryRequirement:
+        """区间收益只需要输出日之前的回看交易日。"""
+        return HistoryRequirement(
+            trading_days=int(self.config["params"]["lookback_days"])
         )

@@ -342,6 +342,91 @@ class MarketDataCacheTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "filters"):
                 MarketData.from_yaml(config_path)
 
+    def test_daily_source_refresh_rebuilds_only_requested_tail(self) -> None:
+        """日频来源变化时应保留早期前缀，不重读其他来源。"""
+        with TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory)
+            data_root = workspace / "raw_data"
+            cache_root = workspace / "market_cache"
+            shutil.copytree(SYNTHETIC_DATA_ROOT, data_root)
+            config_path = workspace / "base.yaml"
+            config_data = self._market_config(data_root, cache_root)
+            self._write_config(config_path, config_data)
+            original_market_data = MarketData.from_yaml(config_path)
+            original_prices = original_market_data.get_panel(
+                "stock_quote",
+                "S_DQ_ADJCLOSE",
+            )
+
+            original_load_data = market_data_module.load_data
+            with patch(
+                "src.data.market_data.load_data",
+                wraps=original_load_data,
+            ) as load_data_mock:
+                refreshed_market_data = MarketData.from_yaml(
+                    config_path,
+                    refresh_sources=["stock_quote"],
+                    incremental_from=pd.Timestamp("2024-05-01"),
+                )
+
+            self.assertEqual(len(load_data_mock.call_args_list), 1)
+            refresh_call = load_data_mock.call_args_list[0]
+            self.assertEqual(refresh_call.kwargs["source_name"], "stock_quote")
+            self.assertEqual(
+                refresh_call.kwargs["start_date"],
+                pd.Timestamp("2024-05-01"),
+            )
+            refreshed_prices = refreshed_market_data.get_panel(
+                "stock_quote",
+                "S_DQ_ADJCLOSE",
+            )
+            pd.testing.assert_frame_equal(
+                refreshed_prices.loc[refreshed_prices.index < "2024-05-01"],
+                original_prices.loc[original_prices.index < "2024-05-01"],
+            )
+
+    def test_financial_event_records_are_cached_and_reused(self) -> None:
+        """财务面板缓存应伴随保存完整公告事件，并在命中时一并复用。"""
+        with TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory)
+            data_root = workspace / "raw_data"
+            cache_root = workspace / "market_cache"
+            shutil.copytree(SYNTHETIC_DATA_ROOT, data_root)
+            self._add_financial_income_data(data_root)
+
+            config_data = self._market_config(data_root, cache_root)
+            config_data["market_data"]["sources"]["financial_income"] = {
+                "fields": ["TOT_OPER_REV"]
+            }
+            config_path = workspace / "growth.yaml"
+            self._write_config(config_path, config_data)
+            first_market_data = MarketData.from_yaml(config_path)
+
+            records_path = cache_root / "financial_income.records.parquet"
+            self.assertTrue(records_path.exists())
+            first_records = first_market_data.get_financial_records(
+                "financial_income"
+            )
+            self.assertEqual(len(first_records), 2)
+            self.assertEqual(
+                first_records.loc[1, "date"],
+                pd.Timestamp("2024-04-25"),
+            )
+            self.assertEqual(
+                first_records.loc[1, "report_period"],
+                pd.Timestamp("2023-12-31"),
+            )
+
+            with patch(
+                "src.data.market_data.load_data",
+                side_effect=AssertionError("完整命中时不应读取原始来源"),
+            ):
+                cached_market_data = MarketData.from_yaml(config_path)
+            pd.testing.assert_frame_equal(
+                cached_market_data.get_financial_records("financial_income"),
+                first_records,
+            )
+
     @staticmethod
     def _market_config(data_root: Path, cache_root: Path) -> dict:
         """构造只包含 MarketData 的测试配置。"""
@@ -422,6 +507,32 @@ class MarketDataCacheTests(unittest.TestCase):
             consensus_directory / "suntime_2024.csv",
             index=False,
         )
+
+    @staticmethod
+    def _add_financial_income_data(data_root: Path) -> None:
+        """补充先披露一季报、后披露上年年报的财务测试数据。"""
+        income_directory = data_root / "stock" / "financial" / "income"
+        income_directory.mkdir(parents=True)
+        pd.DataFrame(
+            [
+                {
+                    "ANN_DT": 20240420,
+                    "ACTUAL_ANN_DT": 20240420,
+                    "S_INFO_WINDCODE": "000001.SZ",
+                    "REPORT_PERIOD": 20240331,
+                    "TOT_OPER_REV": 120.0,
+                    "OPDATE": "2024-04-20 18:00:00",
+                },
+                {
+                    "ANN_DT": 20240422,
+                    "ACTUAL_ANN_DT": 20240425,
+                    "S_INFO_WINDCODE": "000001.SZ",
+                    "REPORT_PERIOD": 20231231,
+                    "TOT_OPER_REV": 460.0,
+                    "OPDATE": "2024-04-25 18:00:00",
+                },
+            ]
+        ).to_csv(income_directory / "income_2024.csv", index=False)
 
     @staticmethod
     def _cache_times(cache_root: Path) -> dict[str, int]:

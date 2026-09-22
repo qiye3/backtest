@@ -8,8 +8,8 @@ from factors.growth_factors.code.utils import (
     BaseFactorPanel,
     build_consensus_profit_surprise,
     build_seasonal_surprise,
-    build_single_quarter_values,
 )
+from factors.quarterly_history import build_financial_field_history
 from src.data.market_data import MarketData
 
 DAILY_BASE_FIELDS = {
@@ -61,18 +61,17 @@ def calculate_rating_upgrade_ratio(market_data: MarketData) -> BaseFactorPanel:
 
 def calculate_quarterly_roe(market_data: MarketData) -> BaseFactorPanel:
     """读取按公告日生效的单季度 ROE 与报告期状态。"""
-    factor_values = market_data.get_panel(
-        "financial_indicators",
+    history = build_financial_field_history(
+        market_data.get_financial_records("financial_indicators"),
         "S_QFA_ROE",
-    ).astype("float64")
-    report_periods = market_data.get_panel(
-        "financial_indicators",
-        "REPORT_PERIOD",
+        market_data.calendar,
+        market_data.membership.columns,
     )
     return BaseFactorPanel(
-        values=factor_values,
+        values=history.values,
         frequency="quarterly",
-        report_periods=report_periods,
+        report_periods=history.report_periods,
+        quarterly_events=history.events,
     )
 
 
@@ -81,22 +80,19 @@ def calculate_income_factor(
     market_data: MarketData,
 ) -> BaseFactorPanel:
     """构造单季营收、利润及其两类标准化意外。"""
-    report_periods = market_data.get_panel(
-        "financial_income",
-        "REPORT_PERIOD",
-    )
     if base_factor_name in {"quarterly_revenue", "revenue_sur"}:
         cumulative_field = "TOT_OPER_REV"
     else:
         cumulative_field = "NET_PROFIT_EXCL_MIN_INT_INC"
-    cumulative_values = market_data.get_panel(
-        "financial_income",
+    history = build_financial_field_history(
+        market_data.get_financial_records("financial_income"),
         cumulative_field,
-    ).astype("float64")
-    quarterly_values = build_single_quarter_values(
-        cumulative_values,
-        report_periods,
+        market_data.calendar,
+        market_data.membership.columns,
+        cumulative=True,
     )
+    quarterly_values = history.values
+    report_periods = history.report_periods
 
     if base_factor_name in {"revenue_sur", "earnings_sue"}:
         factor_values = build_seasonal_surprise(
@@ -116,8 +112,13 @@ def calculate_income_factor(
     else:
         factor_values = quarterly_values
 
+    quarterly_events = None
+    if base_factor_name in {"quarterly_revenue", "quarterly_net_profit"}:
+        quarterly_events = history.events
+
     return BaseFactorPanel(
         values=factor_values,
         frequency="quarterly",
         report_periods=report_periods,
+        quarterly_events=quarterly_events,
     )

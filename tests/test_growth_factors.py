@@ -24,6 +24,7 @@ from factors.growth_factors.code.utils import (
     apply_quarterly_operator,
     build_single_quarter_values,
 )
+from factors.quarterly_history import build_financial_field_history
 from src.cli import run
 from src.config import load_config
 from src.data.market_data import MarketData
@@ -327,6 +328,67 @@ class GrowthUtilityTests(unittest.TestCase):
         changed_values = apply_daily_operator(factor_values, "chg_K1")
         self.assertEqual(percentile_values.iloc[-1, 0], 1.0)
         self.assertEqual(changed_values.iloc[-1, 0], 20.0)
+
+    def test_late_annual_report_updates_qoq_without_reversing_raw_period(self) -> None:
+        """Q1先披露时保持最新状态，迟到年报仅从公告日起补齐Q1环比。"""
+        calendar = pd.bdate_range("2025-04-14", periods=10)
+        stock_code = "000001.SZ"
+        financial_records = pd.DataFrame(
+            [
+                {
+                    "date": calendar[0],
+                    "asset_code": stock_code,
+                    "report_period": pd.Timestamp("2024-09-30"),
+                    "source_order": 0,
+                    "TOT_OPER_REV": 300.0,
+                },
+                {
+                    "date": calendar[4],
+                    "asset_code": stock_code,
+                    "report_period": pd.Timestamp("2025-03-31"),
+                    "source_order": 1,
+                    "TOT_OPER_REV": 120.0,
+                },
+                {
+                    "date": calendar[6],
+                    "asset_code": stock_code,
+                    "report_period": pd.Timestamp("2024-12-31"),
+                    "source_order": 2,
+                    "TOT_OPER_REV": 460.0,
+                },
+                {
+                    "date": calendar[8],
+                    "asset_code": stock_code,
+                    "report_period": pd.Timestamp("2024-12-31"),
+                    "source_order": 3,
+                    "TOT_OPER_REV": 450.0,
+                },
+            ]
+        )
+        history = build_financial_field_history(
+            financial_records,
+            "TOT_OPER_REV",
+            calendar,
+            [stock_code],
+            cumulative=True,
+        )
+        qoq_values = apply_quarterly_operator(
+            history.values,
+            history.report_periods,
+            "qoq",
+            history.events,
+        )
+
+        self.assertEqual(history.values.loc[calendar[4], stock_code], 120.0)
+        self.assertEqual(history.values.loc[calendar[8], stock_code], 120.0)
+        self.assertEqual(
+            history.report_periods.loc[calendar[8], stock_code],
+            pd.Timestamp("2025-03-31"),
+        )
+        self.assertTrue(pd.isna(qoq_values.loc[calendar[5], stock_code]))
+        self.assertEqual(qoq_values.loc[calendar[6], stock_code], -40.0)
+        self.assertEqual(qoq_values.loc[calendar[7], stock_code], -40.0)
+        self.assertEqual(qoq_values.loc[calendar[8], stock_code], -30.0)
 
 
 if __name__ == "__main__":

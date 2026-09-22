@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from factors.fundamental_utils import safe_divide as _safe_divide
+from factors.quarterly_history import apply_quarterly_event_operator
 
 QualityFrequency = Literal["daily", "quarterly"]
 safe_divide = _safe_divide
@@ -21,6 +22,7 @@ class QualityBasePanel:
     values: pd.DataFrame
     frequency: QualityFrequency
     report_periods: pd.DataFrame | None = None
+    quarterly_events: pd.DataFrame | None = None
 
 
 def aligned_financial_ratio(
@@ -52,6 +54,7 @@ def apply_quality_operator(
         base_panel.values,
         base_panel.report_periods,
         operator_name,
+        base_panel.quarterly_events,
     )
 
 
@@ -59,8 +62,23 @@ def apply_quarterly_operator(
     factor_values: pd.DataFrame,
     report_periods: pd.DataFrame,
     operator_name: str,
+    quarterly_events: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """依据每只股票自己的公告历史计算季频变化和稳定性。"""
+    if quarterly_events is not None:
+        return apply_quarterly_event_operator(
+            quarterly_events=quarterly_events,
+            calendar=factor_values.index,
+            asset_codes=factor_values.columns,
+            calculator=lambda values_by_quarter, report_quarter, current_value: (
+                _calculate_operator_value(
+                    values_by_quarter,
+                    report_quarter,
+                    current_value,
+                    operator_name,
+                )
+            ),
+        )
     transformed = pd.DataFrame(
         np.nan,
         index=factor_values.index,

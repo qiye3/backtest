@@ -29,6 +29,10 @@ from src.data.return_data import load_return_panel
 from src.data.style_exposure import load_or_build_style_exposures
 from src.factors import iter_factor_panels, load_factors
 from src.factors.domains import build_domain_masks, parse_factor_output_name
+from src.factors.incremental import (
+    record_factor_update_state,
+    validate_factor_market_revision,
+)
 from src.factors.io import (
     FACTOR_FILE_NAME,
     find_factor_names,
@@ -170,6 +174,8 @@ def _run_pipeline(
         stage_counts["factors"] = len(factor_names)
         progress.complete("factors")
     else:
+        if market_data is not None:
+            validate_factor_market_revision(config, market_data)
         factor_names = find_factor_names(config.factor_result_root)
 
     published_factor_root = factor_output_root(config.output_root)
@@ -357,6 +363,8 @@ def _run_pipeline(
         cache_root,
         retained_root,
     )
+    if run_settings["factors"] and market_data is not None:
+        record_factor_update_state(config, market_data)
     shutil.rmtree(cache_root)
     return RunSummary(stage_counts=stage_counts, output_paths=output_paths)
 

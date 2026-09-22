@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -16,9 +17,11 @@ import pandas as pd
 import yaml
 
 from src.data.cache import (
+    load_financial_records,
     load_source_data,
     load_source_metadata,
     resolve_market_cache_directory,
+    save_financial_records,
     save_source_cache,
 )
 from src.data.calendar import build_trading_calendar
@@ -27,6 +30,17 @@ from src.data.process_data import build_membership_panel, build_source_panel
 
 MEMBERSHIP_SOURCE = "index_membership"
 REQUIRED_UNIVERSE_INDICES = {"000906.SH", "000852.SH"}
+CACHE_FORMAT_VERSION = 2
+MARKET_UPDATE_STATE = ".state/market_update.json"
+
+
+def _load_market_revision(cache_directory: Path) -> int:
+    """读取独立更新命令发布的市场版本；普通旧缓存使用版本零。"""
+    state_path = cache_directory / MARKET_UPDATE_STATE
+    if not state_path.exists():
+        return 0
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    return int(state["revision"])
 
 
 class MarketData:
@@ -39,6 +53,7 @@ class MarketData:
     - membership：中证800与中证1000逐日历史成份并集。
     - benchmark_index：回测基准指数 Wind 代码。
     - cache_directory：来源缓存和全周期派生缓存共用的目录；内存测试可省略。
+    - financial_records：按真实公告日保留全部报告期版本的财务事件。
 
     输出：
     - 该类实例向下游公开 ``calendar``、``membership``、``benchmark_index`` 和
@@ -57,6 +72,8 @@ class MarketData:
         membership: pd.DataFrame,
         benchmark_index: str,
         cache_directory: Path | None = None,
+        financial_records: Mapping[str, pd.DataFrame] | None = None,
+        revision: int = 0,
     ) -> None:
         """
         初始化可供下游直接读取的市场数据对象。
@@ -67,6 +84,7 @@ class MarketData:
         - membership：日期乘股票的布尔研究股票池。
         - benchmark_index：用于构造日历和回测对照的基准指数代码。
         - cache_directory：共享市场缓存目录；为空时派生数据只在内存中计算。
+        - financial_records：财务来源名到规范化公告事件长表的映射。
 
         输出：
         - 无返回值；参数保存为实例状态。
@@ -80,6 +98,8 @@ class MarketData:
         self.membership = membership
         self.benchmark_index = benchmark_index
         self.cache_directory = cache_directory
+        self._financial_records = dict(financial_records or {})
+        self.revision = revision
 
     # 根据 YAML 配置读取缓存或构建完整市场数据对象。
     @classmethod
@@ -88,6 +108,8 @@ class MarketData:
         config_path: str | Path,
         refresh: bool = False,
         market_data_config: Mapping[str, Any] | None = None,
+        refresh_sources: Sequence[str] = (),
+        incremental_from: pd.Timestamp | None = None,
     ) -> MarketData:
         """
         从 YAML 构建或复用市场数据面板。
@@ -96,6 +118,8 @@ class MarketData:
         - config_path：包含 ``market_data`` 分区的 YAML 路径。
         - refresh：为假时优先复用已有来源 Parquet；为真时从原始 CSV 重建并覆盖。
         - market_data_config：已由主配置器补全的数据分区；直接调用时可省略。
+        - refresh_sources：只强制重建这些发生原始文件变化的来源。
+        - incremental_from：原始年度文件变化的最早日期；日频来源仅重建该日起的尾部。
 
         输出：
         - 返回包含交易日历、历史股票池和全部配置来源的 ``MarketData``。
@@ -126,6 +150,7 @@ class MarketData:
             str(index_code) for index_code in resolved_market_data_config["universe_indices"]
         )
         source_configs = resolved_market_data_config["sources"]
+        sources_to_refresh = set(refresh_sources)
 
         index_price_panel, index_price_metadata = _load_index_price_panel(
             data_root=data_root,
@@ -135,7 +160,12 @@ class MarketData:
             universe_indices=universe_indices,
             start_date=start_date,
             end_date=end_date,
-            refresh=refresh,
+            refresh=refresh or "index_price" in sources_to_refresh,
+            incremental_from=(
+                incremental_from
+                if "index_price" in sources_to_refresh and not refresh
+                else None
+            ),
         )
         shared_calendar = pd.DatetimeIndex(index_price_panel.index, name="date")
         membership_panel, universe_codes = _load_membership_panel(
@@ -145,17 +175,18 @@ class MarketData:
             trading_calendar=shared_calendar,
             start_date=pd.Timestamp(index_price_metadata["start_date"]),
             end_date=pd.Timestamp(index_price_metadata["end_date"]),
-            refresh=refresh,
+            refresh=refresh or MEMBERSHIP_SOURCE in sources_to_refresh,
         )
 
         source_panels = {
             "index_price": index_price_panel,
             MEMBERSHIP_SOURCE: membership_panel,
         }
+        financial_records = {}
         for source_name, source_config in source_configs.items():
             if source_name == "index_price":
                 continue
-            source_panels[source_name] = _load_or_build_source_data(
+            source_data, source_financial_records = _load_or_build_source_data(
                 data_root=data_root,
                 cache_directory=cache_directory,
                 source_name=source_name,
@@ -165,8 +196,16 @@ class MarketData:
                 trading_calendar=shared_calendar,
                 universe_codes=universe_codes,
                 universe_indices=universe_indices,
-                refresh=refresh,
+                refresh=refresh or source_name in sources_to_refresh,
+                incremental_from=(
+                    incremental_from
+                    if source_name in sources_to_refresh and not refresh
+                    else None
+                ),
             )
+            source_panels[source_name] = source_data
+            if source_financial_records is not None:
+                financial_records[source_name] = source_financial_records
 
         trading_calendar = shared_calendar[
             (shared_calendar >= start_date) & (shared_calendar <= end_date)
@@ -187,6 +226,15 @@ class MarketData:
             )
             for source_name, source_data in source_panels.items()
         }
+        financial_records = {
+            source_name: _slice_financial_records(
+                source_records=source_records,
+                source_config=source_configs[source_name],
+                start_date=start_date,
+                end_date=end_date,
+            )
+            for source_name, source_records in financial_records.items()
+        }
         membership = _merge_universe_membership(
             source_panels[MEMBERSHIP_SOURCE],
             universe_codes,
@@ -198,6 +246,8 @@ class MarketData:
             membership=membership,
             benchmark_index=benchmark_index,
             cache_directory=cache_directory,
+            financial_records=financial_records,
+            revision=_load_market_revision(cache_directory),
         )
 
     # 从来源缓存中切出指定字段的标准二维面板。
@@ -276,6 +326,32 @@ class MarketData:
         if DATA_SOURCE_SPECS[source_name].kind != "records":
             raise ValueError(f"面板来源应使用 get_panel: {source_name}")
         return self._source_panels[source_name]
+
+    def get_financial_records(self, source_name: str) -> pd.DataFrame:
+        """返回按真实公告日规范化且保留全部报告期版本的财务事件。"""
+        if DATA_SOURCE_SPECS[source_name].kind != "financial":
+            raise ValueError(f"该来源不是财务来源: {source_name}")
+        return self._financial_records[source_name]
+
+    def window(self, start_date: pd.Timestamp) -> MarketData:
+        """构造共享底层数组的尾部只读视图，供有界历史因子增量计算。"""
+        window_calendar = self.calendar[self.calendar >= start_date]
+        source_panels = {}
+        for source_name, source_data in self._source_panels.items():
+            if source_name in DATA_SOURCE_SPECS:
+                if DATA_SOURCE_SPECS[source_name].kind == "records":
+                    source_panels[source_name] = source_data
+                    continue
+            source_panels[source_name] = source_data.loc[window_calendar]
+        return MarketData(
+            source_panels=source_panels,
+            calendar=window_calendar,
+            membership=self.membership.loc[window_calendar],
+            benchmark_index=self.benchmark_index,
+            cache_directory=self.cache_directory,
+            financial_records=self._financial_records,
+            revision=self.revision,
+        )
 
 
 # ===================== YAML 配置边界 ===================== #
@@ -386,6 +462,7 @@ def _validate_market_data_config(market_data_config: Mapping[str, Any]) -> None:
 # ===================== 共享缓存请求 ===================== #
 
 SEMANTIC_METADATA_KEYS = (
+    "cache_format_version",
     "source_root",
     "universe_indices",
     "filters",
@@ -407,6 +484,7 @@ def _source_metadata(
     forecast_year_offsets = _configured_forecast_offsets(source_config)
 
     return {
+        "cache_format_version": CACHE_FORMAT_VERSION,
         "source_root": str(data_root),
         "start_date": start_date.strftime("%Y-%m-%d"),
         "end_date": end_date.strftime("%Y-%m-%d"),
@@ -440,6 +518,9 @@ def _prepare_source_cache(
     """判断来源缓存是否命中，并生成必要重建时使用的并集范围。"""
     cached_metadata = load_source_metadata(cache_directory, source_name)
     if cached_metadata is None:
+        return None, dict(requested_metadata), True
+
+    if cached_metadata.get("cache_format_version") != CACHE_FORMAT_VERSION:
         return None, dict(requested_metadata), True
 
     semantic_conflicts = [
@@ -521,6 +602,7 @@ def _load_index_price_panel(
     start_date: pd.Timestamp,
     end_date: pd.Timestamp,
     refresh: bool,
+    incremental_from: pd.Timestamp | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """读取共享指数行情，必要时按新旧请求的并集重建。"""
     requested_metadata = _source_metadata(
@@ -539,21 +621,28 @@ def _load_index_price_panel(
     if not rebuild:
         return cached_panel, build_metadata
 
+    cached_panel = _incremental_daily_cache(
+        cache_directory,
+        "index_price",
+        build_metadata,
+        incremental_from,
+    )
     build_config = _build_source_config(source_config, build_metadata)
     build_start = pd.Timestamp(build_metadata["start_date"])
     build_end = pd.Timestamp(build_metadata["end_date"])
+    read_start = incremental_from if cached_panel is not None else build_start
     index_records = load_data(
         data_root=data_root,
         source_name="index_price",
         source_config=build_config,
-        start_date=build_start,
+        start_date=read_start,
         end_date=build_end,
         universe_codes=(),
     )
     trading_calendar = build_trading_calendar(
         index_records=index_records,
         benchmark_index=benchmark_index,
-        start_date=build_start,
+        start_date=read_start,
         end_date=build_end,
     )
     index_price_panel = build_source_panel(
@@ -563,6 +652,12 @@ def _load_index_price_panel(
         trading_calendar=trading_calendar,
         asset_codes=build_config["codes"],
     )
+    if cached_panel is not None:
+        index_price_panel = _merge_daily_panel_tail(
+            cached_panel,
+            index_price_panel,
+            read_start,
+        )
     save_source_cache(
         cache_directory,
         "index_price",
@@ -660,7 +755,8 @@ def _load_or_build_source_data(
     universe_codes: Sequence[str],
     universe_indices: Sequence[str],
     refresh: bool,
-) -> pd.DataFrame:
+    incremental_from: pd.Timestamp | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame | None]:
     """读取一个来源缓存，或按共享范围和字段并集覆盖重建。"""
     requested_metadata = _source_metadata(
         data_root=data_root,
@@ -675,24 +771,38 @@ def _load_or_build_source_data(
         requested_metadata=requested_metadata,
         refresh=refresh,
     )
+    source_spec = DATA_SOURCE_SPECS[source_name]
     if not rebuild:
-        return cached_panel
+        if source_spec.kind != "financial":
+            return cached_panel, None
+        cached_records = load_financial_records(cache_directory, source_name)
+        if cached_records is not None:
+            return cached_panel, cached_records
+        rebuild = True
 
+    cached_daily_panel = None
+    if source_spec.kind == "daily":
+        cached_daily_panel = _incremental_daily_cache(
+            cache_directory,
+            source_name,
+            build_metadata,
+            incremental_from,
+        )
     build_config = _build_source_config(source_config, build_metadata)
     build_start = pd.Timestamp(build_metadata["start_date"])
     build_end = pd.Timestamp(build_metadata["end_date"])
+    read_start = incremental_from if cached_daily_panel is not None else build_start
     build_calendar = trading_calendar[
-        (trading_calendar >= build_start) & (trading_calendar <= build_end)
+        (trading_calendar >= read_start) & (trading_calendar <= build_end)
     ]
     source_records = load_data(
         data_root=data_root,
         source_name=source_name,
         source_config=build_config,
-        start_date=build_start,
+        start_date=read_start,
         end_date=build_end,
         universe_codes=universe_codes,
     )
-    source_spec = DATA_SOURCE_SPECS[source_name]
     if source_spec.kind == "records":
         save_source_cache(
             cache_directory,
@@ -700,7 +810,7 @@ def _load_or_build_source_data(
             source_records,
             build_metadata,
         )
-        return source_records
+        return source_records, None
 
     output_asset_codes = universe_codes
     if source_spec.asset_column is None:
@@ -712,13 +822,80 @@ def _load_or_build_source_data(
         trading_calendar=build_calendar,
         asset_codes=output_asset_codes,
     )
+    if cached_daily_panel is not None:
+        source_panel = _merge_daily_panel_tail(
+            cached_daily_panel,
+            source_panel,
+            read_start,
+        )
     save_source_cache(
         cache_directory,
         source_name,
         source_panel,
         build_metadata,
     )
-    return source_panel
+    if source_spec.kind == "financial":
+        save_financial_records(
+            cache_directory,
+            source_name,
+            source_records,
+        )
+        return source_panel, source_records
+    return source_panel, None
+
+
+def _incremental_daily_cache(
+    cache_directory: Path,
+    source_name: str,
+    build_metadata: Mapping[str, Any],
+    incremental_from: pd.Timestamp | None,
+) -> pd.DataFrame | None:
+    """在失效日晚于缓存起点时读取可保留的日频前缀。"""
+    if incremental_from is None:
+        return None
+    cache_metadata = load_source_metadata(cache_directory, source_name)
+    if cache_metadata is None:
+        return None
+    if incremental_from <= pd.Timestamp(build_metadata["start_date"]):
+        return None
+    return load_source_data(cache_directory, source_name)
+
+
+def _merge_daily_panel_tail(
+    cached_panel: pd.DataFrame,
+    updated_tail: pd.DataFrame,
+    tail_start: pd.Timestamp,
+) -> pd.DataFrame:
+    """保留失效日前的日频缓存，用重读年度文件覆盖尾部。"""
+    cached_prefix = cached_panel.loc[cached_panel.index < tail_start]
+    cached_prefix = cached_prefix.reindex(columns=updated_tail.columns)
+    return pd.concat([cached_prefix, updated_tail])
+
+
+def _slice_financial_records(
+    source_records: pd.DataFrame,
+    source_config: Mapping[str, Any],
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+) -> pd.DataFrame:
+    """切出当前运行需要的财务公告、业务键和配置字段。"""
+    earliest_event_date = start_date - pd.DateOffset(years=1)
+    date_mask = source_records["date"].between(earliest_event_date, end_date)
+    standard_columns = [
+        column_name
+        for column_name in (
+            "date",
+            "asset_code",
+            "report_period",
+            "operation_time",
+            "source_order",
+        )
+        if column_name in source_records.columns
+    ]
+    output_columns = list(
+        dict.fromkeys([*standard_columns, *source_config["fields"]])
+    )
+    return source_records.loc[date_mask, output_columns].reset_index(drop=True)
 
 
 def _slice_source_data(

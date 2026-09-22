@@ -19,6 +19,11 @@ from factors.quality_factors.code.utils import (
     apply_quality_operator,
     safe_divide,
 )
+from factors.quarterly_history import (
+    apply_quarterly_event_operator,
+    build_financial_field_history,
+    combine_quarterly_histories,
+)
 from src.cli import run
 from src.config import load_config
 from src.factors.config import load_factors
@@ -207,6 +212,70 @@ class QualityUtilityTests(unittest.TestCase):
         self.assertEqual(ratio.iloc[0, 0], 5.0)
         self.assertTrue(pd.isna(ratio.iloc[1, 0]))
         self.assertTrue(pd.isna(periods.iloc[1, 0]))
+
+    def test_late_cross_statement_component_updates_history_from_arrival_date(
+        self,
+    ) -> None:
+        """旧季度分母晚到后，当前季度环比只能从该公告日起恢复。"""
+        calendar = pd.bdate_range("2025-04-21", periods=6)
+        asset_codes = ["A"]
+        numerator_records = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2025-04-21", "2025-04-23"]),
+                "asset_code": asset_codes * 2,
+                "report_period": pd.to_datetime(["2025-03-31", "2024-12-31"]),
+                "numerator": [120.0, 160.0],
+            }
+        )
+        denominator_records = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2025-04-21", "2025-04-24"]),
+                "asset_code": asset_codes * 2,
+                "report_period": pd.to_datetime(["2025-03-31", "2024-12-31"]),
+                "denominator": [30.0, 40.0],
+            }
+        )
+        numerator = build_financial_field_history(
+            numerator_records,
+            "numerator",
+            calendar,
+            asset_codes,
+        )
+        denominator = build_financial_field_history(
+            denominator_records,
+            "denominator",
+            calendar,
+            asset_codes,
+        )
+        ratio_history = combine_quarterly_histories(
+            {"numerator": numerator, "denominator": denominator},
+            lambda values: (
+                values["numerator"] / values["denominator"]
+                if np.isfinite(values["numerator"])
+                and np.isfinite(values["denominator"])
+                and values["denominator"] != 0.0
+                else np.nan
+            ),
+            calendar,
+            asset_codes,
+        )
+        qoq = apply_quarterly_event_operator(
+            ratio_history.events,
+            calendar,
+            asset_codes,
+            lambda values, quarter, current: current - values.get(
+                quarter - 1,
+                np.nan,
+            ),
+        )
+
+        self.assertEqual(ratio_history.values.loc["2025-04-24", "A"], 4.0)
+        self.assertEqual(
+            ratio_history.report_periods.loc["2025-04-24", "A"],
+            pd.Timestamp("2025-03-31"),
+        )
+        self.assertTrue(pd.isna(qoq.loc["2025-04-23", "A"]))
+        self.assertEqual(qoq.loc["2025-04-24", "A"], 0.0)
 
 
 if __name__ == "__main__":

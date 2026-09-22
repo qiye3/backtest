@@ -78,6 +78,18 @@ synthetic 文件包含定期调入和调出区间，只用于接口、PIT 股票
 python -m src.cli --config configs/base_config.yaml
 ```
 
+日常数据同步使用独立增量入口，可一次传入多份共享市场缓存的配置：
+
+```bash
+python -m scripts.update_factor_cache CONFIG_1.yaml CONFIG_2.yaml
+```
+
+`--dry-run` 只报告数据来源和因子的预计更新方式，`--rebuild` 强制整套重建。
+命令以原始文件路径、大小和纳秒修改时间识别新增及历史修订，只刷新变化来源；
+日频年度来源从最早变化年份替换尾部，具有有界历史窗口的因子同步尾部重算。
+默认全历史的自定义因子会安全回退为全量重算。正式执行后，状态和报告保存在
+`market_data.cache_root/.state/` 与 `output.root/.state/`。
+
 正式结果按用途分开保存：
 
 ```text

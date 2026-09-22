@@ -180,7 +180,7 @@ class StrategyTests(unittest.TestCase):
             config = load_config(config_path)
 
             with (
-                patch("src.cli._load_market_data"),
+                patch("src.cli._load_market_data", return_value=None),
                 patch(
                     "src.cli.find_factor_names",
                     return_value=("cni_growth100_score",),
