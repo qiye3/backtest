@@ -19,7 +19,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
 
 import run_all_factor_backtests as factor_runner  # noqa: E402
 import run_strategy_backtests as strategy_runner  # noqa: E402
-from build_release_packages import _build_strategies  # noqa: E402
+from build_release_packages import _build_skill, _build_strategies  # noqa: E402
 from tmux_runner import _logged_shell_command, launch_in_tmux  # noqa: E402
 
 
@@ -147,6 +147,26 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 (staging_root / "factors" / "fundamental_utils.py").is_file()
             )
             self.assertFalse((staging_root / "factors" / "config").exists())
+
+    def test_skill_package_contains_incremental_update_entrypoint(self) -> None:
+        """发布的 Skill 应能直接维护市场缓存和因子结果。"""
+        with TemporaryDirectory() as temporary_directory:
+            staging_root = Path(temporary_directory) / "factor-backtest-skill"
+            staging_root.mkdir()
+
+            _build_skill(staging_root)
+
+            self.assertTrue(
+                (staging_root / "scripts" / "update_factor_cache.py").is_file()
+            )
+            self.assertTrue(
+                (staging_root / "code" / "src" / "data" / "incremental.py").is_file()
+            )
+            self.assertTrue(
+                (staging_root / "code" / "src" / "factors" / "incremental.py").is_file()
+            )
+            skill_text = (staging_root / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn("update_factor_cache.py", skill_text)
 
     def test_tmux_command_retains_failed_log_and_deletes_successful_log(self) -> None:
         """后台命令应使用 pipefail，并按 Python 退出码决定日志去留。"""

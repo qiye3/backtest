@@ -77,6 +77,22 @@ python3 scripts/run_factor_config.py --config /absolute/path/to/run.yaml
 ```
 
 不要把数据、缓存、输出或具体因子配置写入 Skill 包。
+
+## 增量更新市场缓存和因子值
+
+多份配置指向同一个 `market_data.cache_root` 时，可以在一次任务中合并数据需求：
+
+```bash
+PYTHONPATH=/absolute/path/to/factor-library/code \
+python3 scripts/update_factor_cache.py \
+  /absolute/path/to/factor-library/code/configs/growth.yaml \
+  /absolute/path/to/factor-library/code/configs/value.yaml \
+  --dry-run
+```
+
+去掉 `--dry-run` 后，命令会识别原始文件新增和历史修订，先更新共享
+MarketData，再更新每份配置的 `factor.parquet`。`--rebuild` 用于强制整套重建。
+更新任务只管理市场缓存和因子值；IC、分组收益、overall 和回测仍由正式运行链路完整重算。
 """
 
 OPENAI_YAML = """interface:
@@ -93,6 +109,8 @@ REFERENCE_MD = """# Output reference
 - 正式 group return 周期：1、2、4、8 周。
 - 因子 simple/account 回测默认关闭；预留周期为 1、4 周。
 - 指数增强策略 simple 回测默认开启并输出策略图；account 默认关闭。
+- `scripts/update_factor_cache.py`：增量更新共享市场缓存和因子值。
+- 更新状态：`market_data.cache_root/.state/market_update.json` 和 `output.root/.state/factor_update.json`。
 """
 
 
@@ -162,6 +180,7 @@ def _build_skill(staging: Path) -> None:
     for script_name in (
         "run_all_factor_backtests.py",
         "run_factor_config.py",
+        "update_factor_cache.py",
         "sync_index_members.py",
         "tmux_runner.py",
     ):

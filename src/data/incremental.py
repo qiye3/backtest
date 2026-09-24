@@ -250,6 +250,14 @@ def _source_file_inventory(
     return inventory
 
 
+def source_file_inventory(
+    config_path: Path,
+    market_config: Mapping[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    """公开流水线恢复所需的实际原始文件清单。"""
+    return _source_file_inventory(config_path, market_config)
+
+
 def _file_identity(source_path: Path, data_root: Path) -> dict[str, Any]:
     file_stat = source_path.stat()
     return {
