@@ -10,15 +10,17 @@ requires-python = ">=3.9"
 dependencies = [
   "matplotlib>=3.7",
   "numpy>=1.24",
+  "openpyxl>=3.1",
   "pandas>=2.0",
   "pyarrow>=12.0",
+  "py7zr>=0.22",
   "PyYAML>=6.0",
   "scipy>=1.11",
   "tqdm>=4.66",
 ]
 
 [project.optional-dependencies]
-dev = ["ruff>=0.8"]
+dev = ["pytest>=8.0", "ruff>=0.8"]
 
 [tool.setuptools.packages.find]
 include = ["examples*", "factors*", "src*", "strategies*"]

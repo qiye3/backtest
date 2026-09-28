@@ -4,6 +4,32 @@
 group return、simple backtest、account backtest 和 plotter；是否执行每个阶段只由
 主配置中的 `run` 布尔开关决定。
 
+## 分钟目标仓位回测
+
+`src.intraday` 是独立于原 TK 日频链路的通用账户回测入口。策略只需输出长表目标
+仓位，必需字段为 `signal_timestamp,code,target_weight`。日期型信号会使用 YAML 中的
+`date_only_signal_time`；时间统一按 `Asia/Shanghai` 解析。当前第一阶段只支持多头、
+无杠杆，单个时间点的权重和不能超过 1；未出现在新目标中的已有持仓视为目标为 0。
+
+```bash
+python -m scripts.run_minute_backtest --config configs/minute.example.yaml
+```
+
+示例配置直接读取 `/home/qiye/zxy/data/stock_minute` 的每日 ZIP/7z，只抽取股票池内
+CSV，并在 `data.cache_root/minute/<universe_name>/` 生成按日 Parquet 缓存。支持
+`sh/600000.csv` 和 `YYYYMMDD/sh/600000.csv` 两种包内路径；240 根 bar 按结束时刻
+重建为 `09:31–11:30`、`13:01–15:00`。日线参考数据既可为散装 XLSX，也可位于 ZIP
+内部，红利、送股和转增字段按每十股口径换算后在开盘前入账。
+
+默认成交模型使用 bar VWAP 加 5 bps 不利滑点，并限制为 bar 成交量的 10%。订单可
+跨 bar 部分成交但日终撤单；同时执行佣金（万三、最低 5 元）、卖出印花税（
+2023-08-28 前千一、之后万五）、过户费、100 股整手、现金约束和 T+1。零成交量 bar
+不成交；若行情提供 `limit_up/limit_down` 则按涨跌停方向阻断，当前原始分钟文件没有
+涨跌停字段时对 `high == low` 的一字 bar 采取保守阻断。
+
+每次运行在 `output_root/run_name/` 保存配置快照、运行环境、数据质量问题、指标以及
+orders、fills、positions、nav 四套 Parquet 账本。`run_name` 已存在时会拒绝覆盖。
+
 ## 安装
 
 需要 Python 3.9 及以上版本。在项目根目录执行：
