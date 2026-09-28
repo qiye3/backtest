@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import tempfile
 import zipfile
 from collections.abc import Iterable
@@ -17,6 +18,11 @@ from src.intraday.targets import normalize_stock_code
 
 MINUTE_COLUMNS = ["open", "high", "low", "close", "amount", "volume"]
 TIMEZONE = "Asia/Shanghai"
+CACHE_FORMAT_VERSION = 2
+
+# 2025-12-01 至 03 的源文件以手为成交量单位，成交额也同比缩小 100 倍。
+# 分钟与日线汇总已逐日核对，因此在读取边界统一恢复为股和元。
+HUNDREDFOLD_UNIT_DATES = {"20251201", "20251202", "20251203"}
 
 
 def minute_bar_end_times(trading_date: object) -> pd.DatetimeIndex:
@@ -79,7 +85,14 @@ class MinuteArchiveReader:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         result.to_parquet(cache_path, index=False)
         metadata_path.write_text(
-            json.dumps({"codes": normalized_codes}, ensure_ascii=False, indent=2),
+            json.dumps(
+                {
+                    "format_version": CACHE_FORMAT_VERSION,
+                    "codes": normalized_codes,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
         return result.reset_index(drop=True)
@@ -127,6 +140,8 @@ class MinuteArchiveReader:
         if not cache_path.is_file() or not metadata_path.is_file():
             return None
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if metadata.get("format_version") != CACHE_FORMAT_VERSION:
+            return None
         if metadata.get("codes") != requested_codes:
             return None
         return pd.read_parquet(cache_path)
@@ -139,7 +154,8 @@ class MinuteArchiveReader:
     ) -> list[pd.DataFrame]:
         if archive_path.suffix.lower() == ".zip":
             with zipfile.ZipFile(archive_path) as archive:
-                members = _member_lookup(archive.namelist())
+                members, duplicate_codes = _member_lookup(archive.namelist())
+                self._record_duplicate_members(trading_date, duplicate_codes, codes)
                 frames: list[pd.DataFrame] = []
                 for code in codes:
                     if code not in members:
@@ -162,7 +178,8 @@ class MinuteArchiveReader:
         except ImportError as error:
             raise RuntimeError("读取 7z 分钟归档需要安装 py7zr") from error
         with py7zr.SevenZipFile(archive_path, mode="r") as archive:
-            members = _member_lookup(archive.getnames())
+            members, duplicate_codes = _member_lookup(archive.getnames())
+            self._record_duplicate_members(trading_date, duplicate_codes, codes)
             selected = {code: members[code] for code in codes if code in members}
             frames: list[pd.DataFrame] = []
             with tempfile.TemporaryDirectory(prefix="minute-7z-") as temporary_directory:
@@ -178,6 +195,21 @@ class MinuteArchiveReader:
                         frames.append(frame)
         return frames
 
+    def _record_duplicate_members(
+        self,
+        trading_date: pd.Timestamp,
+        duplicate_codes: set[str],
+        requested_codes: list[str],
+    ) -> None:
+        for code in sorted(duplicate_codes & set(requested_codes)):
+            self.issues.append(
+                DataQualityIssue(
+                    str(trading_date.date()),
+                    code,
+                    "归档内存在重复代码成员，已使用首份文件",
+                )
+            )
+
     def _read_member(
         self,
         content: bytes,
@@ -185,11 +217,13 @@ class MinuteArchiveReader:
         code: str,
     ) -> pd.DataFrame | None:
         frame = pd.read_csv(io.BytesIO(content))
-        if list(frame.columns) != MINUTE_COLUMNS:
+        if not _has_supported_minute_columns(frame.columns):
             self.issues.append(
                 DataQualityIssue(str(trading_date.date()), code, "分钟字段不符合预期")
             )
             return None
+        # 2017 年部分文件额外提供 time，2025 年部分文件仅调整了列顺序；按字段名取值。
+        frame = frame.loc[:, MINUTE_COLUMNS].copy()
         if len(frame) != 240:
             self.issues.append(
                 DataQualityIssue(str(trading_date.date()), code, f"bar 数为 {len(frame)}，预期 240")
@@ -202,6 +236,9 @@ class MinuteArchiveReader:
                 DataQualityIssue(str(trading_date.date()), code, "分钟字段包含非数值或空值")
             )
             return None
+        if trading_date.strftime("%Y%m%d") in HUNDREDFOLD_UNIT_DATES:
+            frame["amount"] *= 100
+            frame["volume"] *= 100
         frame.insert(0, "code", code)
         frame.insert(0, "timestamp", minute_bar_end_times(trading_date))
         frame["vwap"] = np.where(
@@ -216,21 +253,36 @@ class MinuteArchiveReader:
         return None
 
 
-def _member_lookup(member_names: Iterable[str]) -> dict[str, str]:
+def _member_lookup(member_names: Iterable[str]) -> tuple[dict[str, str], set[str]]:
     lookup: dict[str, str] = {}
+    duplicate_codes: set[str] = set()
     for member_name in member_names:
         path = PurePosixPath(member_name.replace("\\", "/"))
         if path.suffix.lower() != ".csv" or len(path.parts) < 2:
             continue
         exchange = path.parts[-2].lower()
-        digits = path.stem
-        if digits.lower().startswith(exchange):
-            digits = digits[len(exchange) :]
-        if exchange not in {"sh", "sz", "bj"} or not digits.isdigit():
+        digits = _stock_digits_from_minute_filename(path.stem)
+        if exchange not in {"sh", "sz", "bj"} or digits is None:
             continue
         code = normalize_stock_code(f"{digits}.{exchange.upper()}")
+        if code in lookup:
+            duplicate_codes.add(code)
+            continue
         lookup[code] = member_name
-    return lookup
+    return lookup, duplicate_codes
+
+
+def _stock_digits_from_minute_filename(filename_stem: str) -> str | None:
+    matched = re.search(r"\d{6}", filename_stem)
+    if matched is None:
+        return None
+    return matched.group()
+
+
+def _has_supported_minute_columns(columns: Iterable[object]) -> bool:
+    column_names = {str(column) for column in columns}
+    required_columns = set(MINUTE_COLUMNS)
+    return required_columns.issubset(column_names) and column_names <= required_columns | {"time"}
 
 
 def _empty_minute_frame() -> pd.DataFrame:

@@ -32,6 +32,13 @@ def load_target_weights(
         date_only_signal_time,
     )
     target_weights["code"] = target_weights["code"].map(normalize_stock_code)
+    non_stock_codes = sorted(
+        code
+        for code in target_weights["code"].unique()
+        if not is_a_share_stock_code(code)
+    )
+    if non_stock_codes:
+        raise ValueError(f"首版分钟回测只支持 A 股普通股，收到: {non_stock_codes}")
     target_weights["target_weight"] = pd.to_numeric(
         target_weights["target_weight"],
         errors="raise",
@@ -75,6 +82,16 @@ def code_to_archive_parts(code: str) -> tuple[str, str]:
     normalized = normalize_stock_code(code)
     digits, exchange = normalized.split(".")
     return exchange.lower(), digits
+
+
+def is_a_share_stock_code(code: str) -> bool:
+    """判断代码是否属于当前首版支持的沪深北 A 股普通股。"""
+    digits, exchange = normalize_stock_code(code).split(".")
+    if exchange == "SH":
+        return digits.startswith(("600", "601", "603", "605", "688", "689"))
+    if exchange == "SZ":
+        return digits.startswith(("000", "001", "002", "003", "300", "301"))
+    return digits.startswith(("4", "8", "9")) and not digits.startswith("899")
 
 
 def _signal_timestamps(values: pd.Series, date_only_signal_time: str) -> pd.Series:

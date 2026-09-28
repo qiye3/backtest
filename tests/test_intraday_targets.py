@@ -44,3 +44,18 @@ def test_target_weights_reject_leverage(tmp_path) -> None:
 )
 def test_normalize_stock_code(raw, expected) -> None:
     assert normalize_stock_code(raw) == expected
+
+
+@pytest.mark.parametrize("code", ["200011.SZ", "399001.SZ", "900901.SH"])
+def test_target_weights_reject_non_a_share_security(tmp_path, code) -> None:
+    path = tmp_path / "targets.csv"
+    pd.DataFrame(
+        {
+            "signal_timestamp": ["2025-04-01"],
+            "code": [code],
+            "target_weight": [0.5],
+        }
+    ).to_csv(path, index=False)
+
+    with pytest.raises(ValueError, match="A 股普通股"):
+        load_target_weights(path, "14:55:00")
