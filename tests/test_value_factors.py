@@ -1,4 +1,4 @@
-"""使用 synthetic 数据验证价值因子及公共参数。"""
+"""使用 synthetic 数据验证价值因子及框架后处理配置。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import pandas as pd
 import yaml
 
 from factors.value_factors.code.utils import ValueBasePanel, apply_value_operator
-from factors.value_factors.code.ValueFactor import parse_value_factor_parameters
 from src.cli import run
 from src.config import load_config
 from src.factors.config import load_factors
@@ -134,30 +133,19 @@ class ValueFactorTests(unittest.TestCase):
             finite_count = np.isfinite(self.factor_panels[f"{factor_name}__raw"].to_numpy()).sum()
             self.assertGreater(finite_count, 0, factor_name)
 
-    def test_every_yaml_exposes_common_defaults(self) -> None:
-        """全部价值配置都显式声明统一的可配置后处理参数。"""
-        for config_path in VALUE_CONFIG_DIRECTORY.glob("*.yaml"):
-            params = yaml.safe_load(config_path.read_text(encoding="utf-8"))["params"]
-            self.assertEqual(params["rolling_mean_window"], 1)
-            self.assertEqual(params["min_periods"], 1)
-            self.assertFalse(params["neutralize"])
-            self.assertFalse(params["reverse"])
-            self.assertEqual(params["winsorize"]["min_quantile"], 0.0)
-            self.assertEqual(params["winsorize"]["max_quantile"], 1.0)
-
-    def test_min_periods_validation_uses_fundamental_defaults(self) -> None:
-        """min_periods 可配置但不得超过平滑窗口。"""
-        params = {
-            "base_factor": "ep",
-            "operator": "raw",
-            "rolling_mean_window": 4,
-            "min_periods": 3,
+    def test_every_yaml_uses_framework_postprocess(self) -> None:
+        """全部价值配置只在框架层声明截面后处理。"""
+        forbidden_keys = {
+            "rolling_mean_window",
+            "min_periods",
+            "neutralize",
+            "winsorize",
+            "reverse",
         }
-        parsed = parse_value_factor_parameters(params)
-        self.assertEqual(parsed.min_periods, 3)
-        params["min_periods"] = 5
-        with self.assertRaisesRegex(ValueError, "min_periods"):
-            parse_value_factor_parameters(params)
+        for config_path in VALUE_CONFIG_DIRECTORY.glob("*.yaml"):
+            factor_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            self.assertFalse(forbidden_keys & factor_config["params"].keys())
+            self.assertIn("cross_section", factor_config["postprocess"])
 
 
 class ValueUtilityTests(unittest.TestCase):

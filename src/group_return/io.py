@@ -20,6 +20,7 @@ _SAVED_TABLES = [
     "ic",
     "summary",
     "ic_summary",
+    "factor_quality",
 ]
 
 

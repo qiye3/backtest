@@ -32,6 +32,11 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--config", required=True, type=_absolute_path)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="清空各单因子实验的 .pipeline_cache 并从头运行。",
+    )
+    parser.add_argument(
         "--foreground",
         action="store_true",
         help="不使用 tmux，在当前终端运行正式任务。",
@@ -191,6 +196,7 @@ def main() -> None:
             run_config,
             show_progress=True,
             market_data=shared_market_data,
+            fresh=arguments.fresh,
         )
 
 

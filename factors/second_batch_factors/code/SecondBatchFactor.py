@@ -11,12 +11,8 @@ import pandas as pd
 from factors.fundamental_utils import (
     FundamentalFactorParameters,
     mask_factor_to_membership,
-    neutralize_by_market_cap,
     parse_fundamental_factor_parameters,
     replace_infinite_values,
-    reverse_factor_values,
-    smooth_factor_values,
-    winsorize_cross_section,
 )
 from factors.second_batch_factors.code.base_factors import calculate_base_factor
 from factors.second_batch_factors.code.business_structure import BUSINESS_STRUCTURE_FACTORS
@@ -49,38 +45,19 @@ class SecondBatchFactor(Factor):
         validate_factor_identity(self.name, self.params)
 
     def calc(self, market_data: MarketData) -> pd.DataFrame:
-        """计算固定经济公式，再执行项目统一的截面后处理。"""
+        """计算固定经济公式并限制到研究股票池。"""
         factor_values = get_cached_base_factor(
             self.params.base_factor,
             market_data,
         ).copy()
-        if self.params.rolling_mean_window > 1 or self.params.min_periods > 1:
-            factor_values = smooth_factor_values(
-                factor_values,
-                rolling_mean_window=self.params.rolling_mean_window,
-                min_periods=self.params.min_periods,
-            )
         factor_values = mask_factor_to_membership(factor_values, market_data)
-        if self.params.neutralize:
-            factor_values = neutralize_by_market_cap(factor_values, market_data)
-
-        lower_tail_winsorization = self.params.winsorize_min_quantile > 0.0
-        upper_tail_winsorization = self.params.winsorize_max_quantile < 1.0
-        if lower_tail_winsorization or upper_tail_winsorization:
-            factor_values = winsorize_cross_section(
-                factor_values,
-                min_quantile=self.params.winsorize_min_quantile,
-                max_quantile=self.params.winsorize_max_quantile,
-            )
-        if self.params.reverse:
-            factor_values = reverse_factor_values(factor_values)
         return replace_infinite_values(factor_values).astype("float32")
 
 
 def parse_second_batch_factor_parameters(
     config_params: Mapping[str, Any],
 ) -> FundamentalFactorParameters:
-    """读取公共后处理参数，并限制第二批因子只使用原始公式。"""
+    """读取公式参数，并限制第二批因子只使用原始公式。"""
     params = parse_fundamental_factor_parameters(config_params)
     if params.operator != "raw":
         raise ValueError("第二批新数据因子目前只支持 raw 算子")

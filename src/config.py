@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
@@ -244,6 +245,7 @@ class RunConfig:
     factor_domains: DomainResearchConfig | None
     selected_factor_variants: tuple[str, ...] | None
     factor_result_root: Path
+    factor_parquet_files: dict[str, Path] | None
     strategy_config_directory: Path | None
     external_return_path: Path | None
 
@@ -270,6 +272,11 @@ def save_config_snapshot(
             ),
             encoding="utf-8",
         )
+    if config.factor_parquet_files is not None:
+        snapshot_config["factors"]["parquet_files"] = {
+            factor_name: str(factor_path)
+            for factor_name, factor_path in config.factor_parquet_files.items()
+        }
     output_path = snapshot_root / "config_snapshot.yaml"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
@@ -336,6 +343,7 @@ def load_config(config_path: str | Path) -> RunConfig:
     factor_domains = None
     selected_factor_variants = None
     factor_result_root = factor_output_root(output_root)
+    factor_parquet_files = None
     if "factors" in raw_config:
         factors_config = _section(raw_config, "factors")
         _check_keys(
@@ -344,11 +352,34 @@ def load_config(config_path: str | Path) -> RunConfig:
             {
                 "config_directory",
                 "domain_config",
+                "parquet_files",
                 "result_root",
                 "selected_variants",
             },
             "factors",
         )
+        if "parquet_files" in factors_config:
+            if run_settings["factors"]:
+                raise ValueError(
+                    "factors.parquet_files 只允许在 run.factors=false 时使用"
+                )
+            if "result_root" in factors_config:
+                raise ValueError(
+                    "factors.parquet_files 与 factors.result_root 不能同时配置"
+                )
+            incompatible_keys = {
+                "domain_config",
+                "selected_variants",
+            } & set(factors_config)
+            if incompatible_keys:
+                raise ValueError(
+                    "直接读取 factor.parquet 时不支持以下配置: "
+                    f"{sorted(incompatible_keys)}"
+                )
+            factor_parquet_files = _resolve_factor_parquet_files(
+                resolved_path,
+                factors_config["parquet_files"],
+            )
         if "selected_variants" in factors_config:
             selected_factor_variants = _validate_factor_variants(
                 factors_config["selected_variants"]
@@ -430,9 +461,49 @@ def load_config(config_path: str | Path) -> RunConfig:
         factor_domains=factor_domains,
         selected_factor_variants=selected_factor_variants,
         factor_result_root=factor_result_root,
+        factor_parquet_files=factor_parquet_files,
         strategy_config_directory=strategy_config_directory,
         external_return_path=external_return_path,
     )
+
+
+def _resolve_factor_parquet_files(
+    config_path: Path,
+    configured_files: Any,
+) -> dict[str, Path]:
+    """校验因子名到原生日频 Parquet 的映射并解析文件路径。"""
+    if not isinstance(configured_files, Mapping) or not configured_files:
+        raise ValueError("factors.parquet_files 必须是非空映射")
+
+    resolved_files = {}
+    for factor_name, configured_path in configured_files.items():
+        if not isinstance(factor_name, str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.-]*",
+            factor_name,
+        ):
+            raise ValueError(
+                f"factors.parquet_files 包含无效因子名称: {factor_name!r}"
+            )
+        if not isinstance(configured_path, (str, Path)) or not str(
+            configured_path
+        ).strip():
+            raise ValueError(
+                f"factors.parquet_files.{factor_name} 必须是非空路径"
+            )
+        resolved_path = _resolve_path(config_path, configured_path)
+        if resolved_path.suffix.lower() != ".parquet":
+            raise ValueError(
+                f"factors.parquet_files.{factor_name} 必须指向 Parquet 文件"
+            )
+        if not resolved_path.is_file():
+            raise FileNotFoundError(
+                f"因子 Parquet 不存在: {resolved_path}"
+            )
+        resolved_files[factor_name] = resolved_path
+    return {
+        factor_name: resolved_files[factor_name]
+        for factor_name in sorted(resolved_files)
+    }
 
 
 def _validate_factor_variants(configured_variants: Any) -> tuple[str, ...]:

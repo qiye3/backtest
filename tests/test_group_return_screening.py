@@ -94,7 +94,14 @@ class FactorScreeningSummaryTests(unittest.TestCase):
         self.assertAlmostEqual(summary["high_minus_low_return"], -0.02)
         self.assertAlmostEqual(summary["oriented_long_short_return"], 0.02)
         self.assertAlmostEqual(summary["group_monotonicity"], -1.0)
+        self.assertAlmostEqual(summary["long_short_ir"], -0.23570226039551584)
         self.assertAlmostEqual(summary["long_short_consistent_rate"], 0.5)
+        self.assertEqual(summary["style"], "反转")
+        self.assertEqual(summary["style_strength"], "确认")
+        self.assertEqual(
+            summary["style_vote_detail"],
+            "RankIC反转;十组序号相关反转;G10减G1反转",
+        )
         self.assertEqual(summary["mean_stock_count"], 90.0)
         self.assertEqual(summary["min_stock_count"], 80)
 
@@ -137,7 +144,11 @@ class FactorScreeningSummaryTests(unittest.TestCase):
                         "high_minus_low_return",
                         "oriented_long_short_return",
                         "group_monotonicity",
+                        "long_short_ir",
                         "long_short_consistent_rate",
+                        "style",
+                        "style_strength",
+                        "style_vote_detail",
                     ]
                 },
             }

@@ -203,6 +203,62 @@ class StrategyTests(unittest.TestCase):
             factor_result_root.resolve(),
         )
 
+    def test_strategy_config_can_read_explicit_factor_parquet(self) -> None:
+        """关闭因子计算时策略应接收只读的显式因子文件映射。"""
+        source_config = yaml.safe_load(
+            Path("strategies/yfd_growth100_factors/run.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        with TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            factor_path = temporary_root / "growth_score.parquet"
+            pd.DataFrame(
+                [[1.0]],
+                index=pd.DatetimeIndex(["2024-02-01"], name="date"),
+                columns=pd.Index(["000001.SZ"], name="asset_code"),
+            ).to_parquet(factor_path)
+            source_config["run"]["factors"] = False
+            source_config["run"]["strategy_simple_backtest"] = False
+            source_config["run"]["plotter"] = False
+            source_config["strategy_analysis"]["enabled"] = False
+            source_config["factors"] = {
+                "parquet_files": {
+                    "cni_growth100_score": str(factor_path),
+                }
+            }
+            source_config["output"]["root"] = str(
+                temporary_root / "strategy_output"
+            )
+            config_path = temporary_root / "run.yaml"
+            config_path.write_text(
+                yaml.safe_dump(source_config, sort_keys=False),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            with (
+                patch("src.cli._load_market_data", return_value=None),
+                patch(
+                    "src.cli._calculate_strategy_target_checkpoints",
+                    return_value=("cni_growth100",),
+                ) as calculate_strategies,
+                patch("src.cli._save_strategy_summary_checkpoint"),
+                patch("src.cli._prepare_retained_checkpoints"),
+                patch("src.cli._publish_successful_run", return_value={}),
+            ):
+                run(config)
+
+        self.assertEqual(
+            config.factor_parquet_files,
+            {"cni_growth100_score": factor_path.resolve()},
+        )
+        self.assertEqual(
+            calculate_strategies.call_args.args[1],
+            config.factor_parquet_files,
+        )
+
     def test_growth100_portfolio_limits_replacements_and_caps_weights(
         self,
     ) -> None:

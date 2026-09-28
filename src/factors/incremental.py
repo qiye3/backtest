@@ -42,6 +42,10 @@ def update_factor_results(
     dry_run: bool = False,
 ) -> FactorUpdateResult:
     """更新一份实验配置的 factor.parquet，并在成功后发布统一状态。"""
+    if config.factor_parquet_files is not None:
+        raise ValueError(
+            "显式 factor.parquet 是只读输入，不能由 update_factor_cache 更新"
+        )
     factors = load_factors(config.factor_config_directory)
     published_root = factor_output_root(config.output_root)
     state_path = config.output_root / FACTOR_UPDATE_STATE

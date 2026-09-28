@@ -10,15 +10,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from factors.fundamental_utils import (
-    mask_factor_to_membership,
-    neutralize_by_market_cap,
-    replace_infinite_values,
-    reverse_factor_values,
-    smooth_factor_values,
-    winsorize_cross_section,
-)
-from factors.growth_factors.code.GrowthFactor import parse_growth_factor_parameters
+from factors.fundamental_utils import mask_factor_to_membership
 from factors.growth_factors.code.utils import (
     apply_daily_operator,
     apply_quarterly_operator,
@@ -30,7 +22,6 @@ from src.config import load_config
 from src.data.market_data import MarketData
 from src.factors.config import load_factors
 from src.factors.io import load_factor_panels
-from src.factors.utils import neutralize_factor_values
 from tests.growth_synthetic_data import make_growth_synthetic_data
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -169,70 +160,8 @@ class GrowthFactorTests(unittest.TestCase):
             valid_values = self.factor_panels[f"{factor_name}__raw"][stock_code].dropna()
             self.assertGreater(len(valid_values), 0, factor_name)
 
-    def test_independent_postprocess_functions(self) -> None:
-        """各后处理函数应能独立调用并只完成自身职责。"""
-        calendar = pd.bdate_range("2024-01-02", periods=4)
-        stock_codes = ["A", "B", "C", "D"]
-        membership = pd.DataFrame(True, index=calendar, columns=stock_codes)
-        factor_values = pd.DataFrame(
-            [
-                [1.0, 2.0, 5.0, 20.0],
-                [2.0, 4.0, 7.0, 18.0],
-                [4.0, 3.0, 9.0, 16.0],
-                [8.0, 5.0, 11.0, 14.0],
-            ],
-            index=calendar,
-            columns=stock_codes,
-        )
-        market_values = pd.DataFrame(
-            [[100.0, 200.0, 500.0, 1200.0]] * len(calendar),
-            index=calendar,
-            columns=stock_codes,
-        )
-        market_data = MarketData(
-            source_panels={
-                "stock_valuation": pd.concat(
-                    {"S_VAL_MV": market_values},
-                    axis=1,
-                    names=["field", "asset_code"],
-                )
-            },
-            calendar=calendar,
-            membership=membership,
-            benchmark_index="000906.SH",
-        )
-
-        smoothed_values = smooth_factor_values(
-            factor_values,
-            rolling_mean_window=2,
-            min_periods=1,
-        )
-        masked_values = mask_factor_to_membership(smoothed_values, market_data)
-        neutralized_values = neutralize_by_market_cap(
-            masked_values,
-            market_data,
-        )
-        winsorized_values = winsorize_cross_section(
-            neutralized_values,
-            min_quantile=0.25,
-            max_quantile=0.75,
-        )
-        reversed_values = reverse_factor_values(winsorized_values)
-        actual_values = replace_infinite_values(reversed_values)
-
-        expected_neutralized_values = neutralize_factor_values(
-            factor_values.rolling(2, min_periods=1).mean(),
-            [np.log(market_values)],
-        )
-        expected_winsorized_values = winsorize_cross_section(
-            expected_neutralized_values,
-            min_quantile=0.25,
-            max_quantile=0.75,
-        )
-        pd.testing.assert_frame_equal(actual_values, -expected_winsorized_values)
-
-    def test_default_postprocess_is_identity_inside_membership(self) -> None:
-        """默认窗口、分位点、中性化和方向参数不得改变有效因子值。"""
+    def test_membership_mask_preserves_in_universe_values(self) -> None:
+        """股票池掩码不得改变池内有效因子值。"""
         calendar = pd.bdate_range("2024-01-02", periods=3)
         factor_values = pd.DataFrame(
             [[1.0, 10.0], [2.0, 20.0], [3.0, 30.0]],
@@ -248,25 +177,39 @@ class GrowthFactorTests(unittest.TestCase):
         actual_values = mask_factor_to_membership(factor_values, market_data)
         pd.testing.assert_frame_equal(actual_values, factor_values)
 
-    def test_configurable_min_periods_is_validated(self) -> None:
-        """min_periods 可配置，但不得超过滚动窗口。"""
-        config_params = {
-            "base_factor": "consensus_eps",
-            "operator": "raw",
-            "rolling_mean_window": 3,
-            "min_periods": 2,
-            "neutralize": False,
-            "winsorize": {
-                "min_quantile": 0.0,
-                "max_quantile": 1.0,
-            },
-            "reverse": False,
+    def test_formal_configs_have_one_postprocess_definition(self) -> None:
+        """五组正式配置不得再携带旧后处理键。"""
+        forbidden_keys = {
+            "rolling_mean_window",
+            "min_periods",
+            "neutralize",
+            "winsorize",
+            "reverse",
         }
-        parsed_params = parse_growth_factor_parameters(config_params)
-        self.assertEqual(parsed_params.min_periods, 2)
-        config_params["min_periods"] = 4
-        with self.assertRaisesRegex(ValueError, "min_periods"):
-            parse_growth_factor_parameters(config_params)
+        group_names = (
+            "growth_factors",
+            "quality_factors",
+            "value_factors",
+            "first_batch_factors",
+            "second_batch_factors",
+        )
+        config_paths = [
+            config_path
+            for group_name in group_names
+            for config_path in (PROJECT_ROOT / "factors" / group_name / "config").glob(
+                "*.yaml"
+            )
+        ]
+        self.assertEqual(len(config_paths), 192)
+        for config_path in config_paths:
+            factor_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            self.assertFalse(forbidden_keys & factor_config["params"].keys(), config_path)
+            self.assertIn("cross_section", factor_config["postprocess"], config_path)
+            self.assertEqual(
+                [variant["suffix"] for variant in factor_config["variants"]],
+                ["raw", "industry_neutral"],
+                config_path,
+            )
 
     def _income_row(self, stock_code: str, report_quarter: str) -> pd.Series:
         """从 synthetic 利润表中取得指定股票和报告季度记录。"""

@@ -11,11 +11,7 @@ import pandas as pd
 
 from factors.fundamental_utils import (
     mask_factor_to_membership,
-    neutralize_by_market_cap,
     replace_infinite_values,
-    reverse_factor_values,
-    smooth_factor_values,
-    winsorize_cross_section,
 )
 from factors.growth_factors.code.base_factors import calculate_base_factor
 from factors.growth_factors.code.utils import (
@@ -24,7 +20,7 @@ from factors.growth_factors.code.utils import (
     apply_quarterly_operator,
 )
 from src.data.market_data import MarketData
-from src.factors.base import Factor
+from src.factors.base import Factor, FactorSearchSource
 
 DAILY_BASE_FACTORS = {
     "consensus_eps",
@@ -61,29 +57,23 @@ _BASE_FACTOR_CACHE_LOCK = RLock()
 
 @dataclass(frozen=True)
 class GrowthFactorParameters:
-    """保存并校验单个景气因子的公式与公共后处理参数。"""
+    """保存单个景气因子的公式与时间序列算子。"""
 
     base_factor: str
     operator: str
-    rolling_mean_window: int
-    min_periods: int
-    neutralize: bool
-    winsorize_min_quantile: float
-    winsorize_max_quantile: float
-    reverse: bool
 
 
 class GrowthFactor(Factor):
     """按配置计算一个景气基础因子或其核心时间序列变体。"""
 
     def __init__(self, config: Mapping[str, Any]) -> None:
-        """保存 Factor 配置并提前验证名称、算子和后处理参数。"""
+        """保存 Factor 配置并提前验证名称和算子。"""
         super().__init__(config)
         self.params = parse_growth_factor_parameters(self.config["params"])
         validate_factor_identity(self.name, self.params)
 
     def calc(self, market_data: MarketData) -> pd.DataFrame:
-        """计算基础公式，并按本因子配置分别调用各项处理函数。"""
+        """计算基础公式及其时间序列变体。"""
         base_factor_panel = get_cached_base_factor(
             self.params.base_factor,
             market_data,
@@ -101,27 +91,34 @@ class GrowthFactor(Factor):
                 base_factor_panel.quarterly_events,
             )
 
-        if self.params.rolling_mean_window > 1 or self.params.min_periods > 1:
-            factor_values = smooth_factor_values(
-                factor_values,
-                rolling_mean_window=self.params.rolling_mean_window,
-                min_periods=self.params.min_periods,
-            )
         factor_values = mask_factor_to_membership(factor_values, market_data)
-        if self.params.neutralize:
-            factor_values = neutralize_by_market_cap(factor_values, market_data)
-        lower_tail_winsorization = self.params.winsorize_min_quantile > 0.0
-        upper_tail_winsorization = self.params.winsorize_max_quantile < 1.0
-        if lower_tail_winsorization or upper_tail_winsorization:
-            factor_values = winsorize_cross_section(
-                factor_values,
-                min_quantile=self.params.winsorize_min_quantile,
-                max_quantile=self.params.winsorize_max_quantile,
-            )
-        if self.params.reverse:
-            factor_values = reverse_factor_values(factor_values)
         factor_values = replace_infinite_values(factor_values)
         return factor_values.astype("float32")
+
+    def factor_search_source(
+        self,
+        market_data: MarketData,
+    ) -> FactorSearchSource:
+        """为 raw 景气因子保留季度公告事件，供 PIT 时序搜索使用。"""
+        base_factor_panel = get_cached_base_factor(
+            self.params.base_factor,
+            market_data,
+        )
+        if self.params.operator != "raw":
+            return FactorSearchSource(
+                values=self.calc(market_data),
+                frequency=base_factor_panel.frequency,
+            )
+        factor_values = mask_factor_to_membership(
+            base_factor_panel.values,
+            market_data,
+        )
+        factor_values = replace_infinite_values(factor_values)
+        return FactorSearchSource(
+            values=factor_values.astype("float32"),
+            frequency=base_factor_panel.frequency,
+            quarterly_events=base_factor_panel.quarterly_events,
+        )
 
 
 def get_cached_base_factor(
@@ -142,45 +139,10 @@ def get_cached_base_factor(
 def parse_growth_factor_parameters(
     config_params: Mapping[str, Any],
 ) -> GrowthFactorParameters:
-    """读取公共默认值并校验 YAML 参数类型和范围。"""
-    rolling_mean_window = config_params.get("rolling_mean_window", 1)
-    min_periods = config_params.get("min_periods", 1)
-    neutralize = config_params.get("neutralize", False)
-    reverse = config_params.get("reverse", False)
-    winsorize_config = config_params.get(
-        "winsorize",
-        {"min_quantile": 0.0, "max_quantile": 1.0},
-    )
-
-    if not isinstance(rolling_mean_window, int) or isinstance(
-        rolling_mean_window,
-        bool,
-    ):
-        raise TypeError("rolling_mean_window 必须是正整数")
-    if rolling_mean_window <= 0:
-        raise ValueError("rolling_mean_window 必须是正整数")
-    if not isinstance(min_periods, int) or isinstance(min_periods, bool):
-        raise TypeError("min_periods 必须是正整数")
-    if min_periods <= 0 or min_periods > rolling_mean_window:
-        raise ValueError("min_periods 必须在 1 到 rolling_mean_window 之间")
-    if not isinstance(neutralize, bool):
-        raise TypeError("neutralize 必须是布尔值")
-    if not isinstance(reverse, bool):
-        raise TypeError("reverse 必须是布尔值")
-
-    min_quantile = float(winsorize_config["min_quantile"])
-    max_quantile = float(winsorize_config["max_quantile"])
-    if not 0.0 <= min_quantile < max_quantile <= 1.0:
-        raise ValueError("winsorize 分位点必须满足 0 <= min < max <= 1")
+    """读取景气因子的基础公式与时间序列算子。"""
     return GrowthFactorParameters(
         base_factor=str(config_params["base_factor"]),
         operator=str(config_params["operator"]),
-        rolling_mean_window=rolling_mean_window,
-        min_periods=min_periods,
-        neutralize=neutralize,
-        winsorize_min_quantile=min_quantile,
-        winsorize_max_quantile=max_quantile,
-        reverse=reverse,
     )
 
 

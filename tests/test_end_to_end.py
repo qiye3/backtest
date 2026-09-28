@@ -21,6 +21,7 @@ from src.backtest.io import load_backtest_results, save_backtest_results
 from src.cli import run
 from src.config import load_config
 from src.data.market_data import MarketData
+from src.factors import iter_factor_panels as actual_iter_factor_panels
 from src.factors.io import load_factor_panels
 from src.group_return.evaluator import _prepare_return_horizons, evaluate
 from src.group_return.grouping import build_group_definitions, core_group_ids
@@ -172,13 +173,78 @@ class EndToEndTests(unittest.TestCase):
                 b"previous successful result",
             )
 
-            config_data["run"]["simple_backtest"] = False
-            self._write_config(config_path, config_data)
-            summary = run(load_config(config_path))
+            with patch(
+                "src.cli.iter_factor_panels",
+                wraps=actual_iter_factor_panels,
+            ) as factor_iterator:
+                summary = run(load_config(config_path))
 
-            self.assertEqual(summary.stage_counts, {"factors": 2})
+            self.assertEqual(
+                summary.stage_counts,
+                {"factors": 2, "simple_backtest": 2},
+            )
+            self.assertEqual(factor_iterator.call_count, 1)
+            self.assertEqual(factor_iterator.call_args.kwargs["factors"], [])
             self.assertFalse(checkpoint_root.exists())
             self.assertTrue(pd.read_parquet(previous_factor_path).shape[0] > 0)
+
+    def test_failed_factor_stage_resumes_from_completed_factor(self) -> None:
+        """因子阶段中断后，同签名重跑只计算尚未完成的基础因子。"""
+        with TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory)
+            output_root = workspace / "output"
+            config_path = workspace / "factor_resume.yaml"
+            config_data = self._test_config(output_root)
+            config_data["market_data"]["cache_root"] = str(
+                workspace / "market_cache"
+            )
+            config_data["run"].update(
+                {
+                    "group_return": False,
+                    "simple_backtest": False,
+                    "account_backtest": False,
+                    "plotter": False,
+                    "overall_evaluation": False,
+                }
+            )
+            self._write_config(config_path, config_data)
+
+            def fail_after_first_factor(**kwargs):
+                for result in actual_iter_factor_panels(**kwargs):
+                    yield result
+                    raise RuntimeError("injected factor failure")
+
+            with patch(
+                "src.cli.iter_factor_panels",
+                side_effect=fail_after_first_factor,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "injected factor"):
+                    run(load_config(config_path))
+
+            state_path = output_root / ".pipeline_cache" / "run_state.json"
+            state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+            completed_factors = state["completed"]["factors"]
+            self.assertEqual(len(completed_factors), 1)
+
+            recomputed_factors = []
+
+            def record_pending_factors(**kwargs):
+                recomputed_factors.extend(
+                    factor.name for factor in kwargs["factors"]
+                )
+                yield from actual_iter_factor_panels(**kwargs)
+
+            with patch(
+                "src.cli.iter_factor_panels",
+                side_effect=record_pending_factors,
+            ):
+                run(load_config(config_path))
+
+            self.assertEqual(
+                recomputed_factors,
+                [name for name in FACTOR_NAMES if name not in completed_factors],
+            )
+            self.assertFalse(state_path.parent.exists())
 
     def test_group_return_outputs_survive_later_stage_failure(self) -> None:
         """评价阶段成功后应立即发布汇总和图，不受后续回测失败影响。"""
@@ -271,6 +337,10 @@ class EndToEndTests(unittest.TestCase):
                     "rank_ic_mean_2w",
                     "rank_ic_mean_4w",
                     "q10_return_1w",
+                    "long_short_ir_4w",
+                    "style_4w",
+                    "style_strength_4w",
+                    "style_vote_detail_4w",
                 }
                 - set(weekly_summary.columns),
                 set(),
@@ -828,6 +898,108 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(restored_summary["periods"], {})
             self.assertEqual(len(restored_summary["metrics"]), 24)
 
+    def test_direct_factor_parquet_matches_result_root_backtest(self) -> None:
+        """显式因子文件与结果根读取应产生完全一致的 simple 指标。"""
+        with TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory)
+            source_output = workspace / "source_output"
+            source_config = self._test_config(source_output)
+            source_config["run"].update(
+                {
+                    "factors": True,
+                    "group_return": False,
+                    "simple_backtest": False,
+                    "account_backtest": False,
+                    "plotter": False,
+                    "overall_evaluation": False,
+                }
+            )
+            source_config_path = workspace / "source.yaml"
+            self._write_config(source_config_path, source_config)
+            run(load_config(source_config_path))
+
+            factor_paths = {
+                factor_name: (
+                    source_output
+                    / "factors"
+                    / factor_name
+                    / "factor.parquet"
+                )
+                for factor_name in FACTOR_NAMES
+            }
+            original_bytes = {
+                factor_name: factor_path.read_bytes()
+                for factor_name, factor_path in factor_paths.items()
+            }
+
+            result_root_output = workspace / "result_root_output"
+            result_root_config = self._direct_backtest_config(
+                result_root_output,
+                source_config,
+            )
+            result_root_config["factors"] = {
+                "result_root": str(source_output / "factors")
+            }
+            result_root_config_path = workspace / "result_root.yaml"
+            self._write_config(result_root_config_path, result_root_config)
+            run(load_config(result_root_config_path))
+
+            direct_output = workspace / "direct_output"
+            direct_config = self._direct_backtest_config(
+                direct_output,
+                source_config,
+            )
+            direct_config["factors"] = {
+                "parquet_files": {
+                    factor_name: str(factor_path)
+                    for factor_name, factor_path in factor_paths.items()
+                }
+            }
+            direct_config_path = workspace / "direct.yaml"
+            self._write_config(direct_config_path, direct_config)
+            run(load_config(direct_config_path))
+
+            direct_snapshot = yaml.safe_load(
+                (direct_output / "config_snapshot.yaml").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                direct_snapshot["factors"]["parquet_files"],
+                {
+                    factor_name: str(factor_path.resolve())
+                    for factor_name, factor_path in factor_paths.items()
+                },
+            )
+
+            result_root_results = load_backtest_results(
+                FACTOR_NAMES,
+                result_root_output / "factors",
+                "simple",
+            )
+            direct_results = load_backtest_results(
+                FACTOR_NAMES,
+                direct_output / "factors",
+                "simple",
+            )
+            for factor_name in FACTOR_NAMES:
+                pd.testing.assert_frame_equal(
+                    direct_results[factor_name]["metrics"],
+                    result_root_results[factor_name]["metrics"],
+                )
+                self.assertEqual(
+                    factor_paths[factor_name].read_bytes(),
+                    original_bytes[factor_name],
+                )
+                self.assertFalse(
+                    (
+                        direct_output
+                        / "factors"
+                        / factor_name
+                        / "factor.parquet"
+                    ).exists()
+                )
+
     @staticmethod
     def _test_config(output_root: Path) -> dict:
         """把 Wind 默认配置替换为可重复的 synthetic 测试数据。"""
@@ -888,6 +1060,24 @@ class EndToEndTests(unittest.TestCase):
                 },
             },
         }
+        return config_data
+
+    @staticmethod
+    def _direct_backtest_config(output_root: Path, source_config: dict) -> dict:
+        """基于同一市场口径构造只运行 simple 的读取型配置。"""
+        config_data = deepcopy(source_config)
+        config_data["output"]["root"] = str(output_root)
+        config_data["output"]["save_parquet"]["simple_backtest"] = True
+        config_data["run"].update(
+            {
+                "factors": False,
+                "group_return": False,
+                "simple_backtest": True,
+                "account_backtest": False,
+                "plotter": False,
+                "overall_evaluation": False,
+            }
+        )
         return config_data
 
     @staticmethod

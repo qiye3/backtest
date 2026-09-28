@@ -26,6 +26,15 @@ class HistoryRequirement:
     full_history: bool = False
 
 
+@dataclass(frozen=True)
+class FactorSearchSource:
+    """保存因子搜索使用的基础面板及可选季度公告事件。"""
+
+    values: pd.DataFrame
+    frequency: str | None = None
+    quarterly_events: pd.DataFrame | None = None
+
+
 class Factor(ABC):
     """
     保存单个因子的完整配置并约束计算接口。
@@ -81,3 +90,10 @@ class Factor(ABC):
     def history_requirement(self) -> HistoryRequirement:
         """返回增量重算所需历史；外部因子默认全历史以保证正确性。"""
         return HistoryRequirement(full_history=True)
+
+    def factor_search_source(
+        self,
+        market_data: MarketData,
+    ) -> FactorSearchSource:
+        """返回时序算子搜索的基础值；普通因子默认只提供日频化面板。"""
+        return FactorSearchSource(values=self.calc(market_data))

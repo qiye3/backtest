@@ -44,7 +44,11 @@ SCREENING_COLUMNS = [
     "high_minus_low_return",
     "oriented_long_short_return",
     "group_monotonicity",
+    "long_short_ir",
     "long_short_consistent_rate",
+    "style",
+    "style_strength",
+    "style_vote_detail",
 ]
 BACKTEST_METRIC_COLUMNS = [
     "total_return",
@@ -229,6 +233,18 @@ def _build_horizon_record(
     low_return = group_summary.at[low_group, "group_return"]
     high_return = group_summary.at[high_group, "group_return"]
     high_minus_low_return = high_return - low_return
+    group_monotonicity = _group_monotonicity(group_summary, group_order)
+    long_short_ir, long_short_consistent_rate = _long_short_statistics(
+        group_detail,
+        low_group,
+        high_group,
+        direction_sign,
+    )
+    style = _classify_style(
+        rank_ic_mean=ic_summary.rank_ic_mean,
+        group_monotonicity=group_monotonicity,
+        high_minus_low_return=high_minus_low_return,
+    )
 
     return {
         "factor_name": factor_name,
@@ -267,16 +283,12 @@ def _build_horizon_record(
         "oriented_long_short_return": (
             high_minus_low_return * direction_sign
         ),
-        "group_monotonicity": _group_monotonicity(
-            group_summary,
-            group_order,
-        ),
-        "long_short_consistent_rate": _long_short_consistent_rate(
-            group_detail,
-            low_group,
-            high_group,
-            direction_sign,
-        ),
+        "group_monotonicity": group_monotonicity,
+        "long_short_ir": long_short_ir,
+        "long_short_consistent_rate": long_short_consistent_rate,
+        "style": style["style"],
+        "style_strength": style["style_strength"],
+        "style_vote_detail": style["style_vote_detail"],
     }
 
 
@@ -309,15 +321,13 @@ def _group_monotonicity(
     return group_positions.corr(group_returns, method="spearman")
 
 
-def _long_short_consistent_rate(
+def _long_short_statistics(
     group_detail: pd.DataFrame,
     low_group: str,
     high_group: str,
     direction_sign: float,
-) -> float:
-    """计算逐期高减低收益与因子主要方向一致的比例。"""
-    if pd.isna(direction_sign):
-        return np.nan
+) -> tuple[float, float]:
+    """计算逐期高减低收益的 IR 和方向一致率。"""
     group_returns = group_detail.pivot(
         index="date",
         columns="group_id",
@@ -326,4 +336,67 @@ def _long_short_consistent_rate(
     long_short_returns = (
         group_returns[high_group] - group_returns[low_group]
     ).dropna()
-    return (long_short_returns * direction_sign > 0).mean()
+    return_standard_deviation = long_short_returns.std(ddof=1)
+    long_short_ir = (
+        long_short_returns.mean() / return_standard_deviation
+        if return_standard_deviation > 0
+        else np.nan
+    )
+    if pd.isna(direction_sign):
+        consistent_rate = np.nan
+    else:
+        consistent_rate = (long_short_returns * direction_sign > 0).mean()
+    return long_short_ir, consistent_rate
+
+
+def _classify_style(
+    rank_ic_mean: float,
+    group_monotonicity: float,
+    high_minus_low_return: float,
+) -> dict[str, str]:
+    """用新框架可稳定输出的三项方向证据判定动量或反转。"""
+    vote_values = {
+        "RankIC": rank_ic_mean,
+        "十组序号相关": group_monotonicity,
+        "G10减G1": high_minus_low_return,
+    }
+    votes = {
+        name: _direction_vote(value)
+        for name, value in vote_values.items()
+    }
+    signed_votes = [vote for vote in votes.values() if vote != 0]
+    momentum_votes = signed_votes.count(1)
+    reversal_votes = signed_votes.count(-1)
+
+    if not signed_votes:
+        style = "弱"
+    elif momentum_votes and reversal_votes:
+        style = "非线性"
+    elif momentum_votes:
+        style = "动量"
+    else:
+        style = "反转"
+
+    if style in {"动量", "反转"} and len(signed_votes) == len(votes):
+        style_strength = "确认"
+    elif style in {"动量", "反转"}:
+        style_strength = "倾向"
+    else:
+        style_strength = ""
+
+    vote_labels = {1: "动量", -1: "反转", 0: "平"}
+    style_vote_detail = ";".join(
+        f"{name}{vote_labels[vote]}" for name, vote in votes.items()
+    )
+    return {
+        "style": style,
+        "style_strength": style_strength,
+        "style_vote_detail": style_vote_detail,
+    }
+
+
+def _direction_vote(value: float) -> int:
+    """把单项指标转换为动量、反转或弃权票。"""
+    if pd.isna(value) or abs(value) <= 1e-12:
+        return 0
+    return 1 if value > 0 else -1

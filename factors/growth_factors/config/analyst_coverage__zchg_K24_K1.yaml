@@ -5,13 +5,6 @@ implementation:
 params:
   base_factor: analyst_coverage
   operator: zchg_K24_K1
-  rolling_mean_window: 1
-  min_periods: 1
-  neutralize: false
-  winsorize:
-    min_quantile: 0.0
-    max_quantile: 1.0
-  reverse: false
 postprocess:
   cross_section:
     method: rank

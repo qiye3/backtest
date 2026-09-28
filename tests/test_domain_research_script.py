@@ -126,6 +126,7 @@ def test_config_snapshot_contains_replayable_domain_reference() -> None:
                 }
             },
             factor_domains=_domain_config(Path("/research/domains.yaml")),
+            factor_parquet_files=None,
         )
 
         snapshot_path = save_config_snapshot(run_config)

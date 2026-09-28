@@ -119,6 +119,33 @@ params:
 
 配置目录中的所有 `*.yaml` 会按文件名排序后动态导入并批量计算。
 
+## 直接回测已有因子 Parquet
+
+框架可以跳过 Factor 计算，直接读取一个或多个由本框架生成的原生日频
+`factor.parquet`。在主配置中关闭因子阶段，并显式声明最终因子名与文件路径：
+
+```yaml
+run:
+  factors: false
+  group_return: true
+  simple_backtest: true
+
+factors:
+  parquet_files:
+    momentum_20d: /data/factors/momentum_20d/factor.parquet
+    value_score: ../factor_inputs/value_score.parquet
+```
+
+相对路径以主配置文件所在目录为基准。`parquet_files` 与 `result_root` 互斥；前者
+直接列出文件，后者继续用于复用完整的框架因子结果目录。输入文件始终只读，不会被
+复制、覆盖或受 `output.save_parquet.factor` 控制，下游结果仍保存到
+`output.root/factors/<factor_name>/`。
+
+输入必须是单因子宽表：索引为唯一、升序且无时区的 `DatetimeIndex`，列为唯一股票
+代码，值只能是数值或 `NaN`。本入口不接受 `date/ts/code` 分钟长表，也不会自动做
+日频聚合、缺失填充或因子变体计算。输入因子仍按各评价和回测阶段配置的
+`factor_lag_days` 读取；因子历史可得性和 PIT 正确性由输入文件生产流程保证。
+
 ## 分域研究
 
 主配置可通过 `factors.domain_config` 引用独立 domains YAML。文件中的

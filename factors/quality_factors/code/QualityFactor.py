@@ -11,12 +11,8 @@ import pandas as pd
 from factors.fundamental_utils import (
     FundamentalFactorParameters,
     mask_factor_to_membership,
-    neutralize_by_market_cap,
     parse_fundamental_factor_parameters,
     replace_infinite_values,
-    reverse_factor_values,
-    smooth_factor_values,
-    winsorize_cross_section,
 )
 from factors.quality_factors.code.base_factors import calculate_base_factor
 from factors.quality_factors.code.utils import QualityBasePanel, apply_quality_operator
@@ -95,34 +91,16 @@ class QualityFactor(Factor):
     """按配置计算一个质量基础因子或其核心变体。"""
 
     def __init__(self, config: Mapping[str, Any]) -> None:
-        """保存配置并提前校验因子名称、公式和公共参数。"""
+        """保存配置并提前校验因子名称、公式和算子。"""
         super().__init__(config)
         self.params = parse_quality_factor_parameters(self.config["params"])
         validate_factor_identity(self.name, self.params)
 
     def calc(self, market_data: MarketData) -> pd.DataFrame:
-        """计算 PIT 公式，并按本因子配置分别调用各项处理函数。"""
+        """计算 PIT 公式及其时间序列变体。"""
         base_panel = get_cached_base_factor(self.params.base_factor, market_data)
         factor_values = apply_quality_operator(base_panel, self.params.operator)
-        if self.params.rolling_mean_window > 1 or self.params.min_periods > 1:
-            factor_values = smooth_factor_values(
-                factor_values,
-                rolling_mean_window=self.params.rolling_mean_window,
-                min_periods=self.params.min_periods,
-            )
         factor_values = mask_factor_to_membership(factor_values, market_data)
-        if self.params.neutralize:
-            factor_values = neutralize_by_market_cap(factor_values, market_data)
-        lower_tail_winsorization = self.params.winsorize_min_quantile > 0.0
-        upper_tail_winsorization = self.params.winsorize_max_quantile < 1.0
-        if lower_tail_winsorization or upper_tail_winsorization:
-            factor_values = winsorize_cross_section(
-                factor_values,
-                min_quantile=self.params.winsorize_min_quantile,
-                max_quantile=self.params.winsorize_max_quantile,
-            )
-        if self.params.reverse:
-            factor_values = reverse_factor_values(factor_values)
         factor_values = replace_infinite_values(factor_values)
         return factor_values.astype("float32")
 

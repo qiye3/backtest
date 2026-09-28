@@ -19,7 +19,12 @@ if str(SCRIPTS_ROOT) not in sys.path:
 
 import run_all_factor_backtests as factor_runner  # noqa: E402
 import run_strategy_backtests as strategy_runner  # noqa: E402
-from build_release_packages import _build_skill, _build_strategies  # noqa: E402
+from build_release_packages import (  # noqa: E402
+    _build_factors,
+    _build_search_skill,
+    _build_skill,
+    _build_strategies,
+)
 from tmux_runner import _logged_shell_command, launch_in_tmux  # noqa: E402
 
 
@@ -148,6 +153,18 @@ class ReleaseWorkflowTests(unittest.TestCase):
             )
             self.assertFalse((staging_root / "factors" / "config").exists())
 
+    def test_factor_package_contains_shared_history_runtime(self) -> None:
+        """Factors 包应携带五组公式共同依赖的季度历史模块。"""
+        with TemporaryDirectory() as temporary_directory:
+            staging_root = Path(temporary_directory) / "factors_release"
+            staging_root.mkdir()
+
+            _build_factors(staging_root)
+
+            self.assertTrue(
+                (staging_root / "factors" / "quarterly_history.py").is_file()
+            )
+
     def test_skill_package_contains_incremental_update_entrypoint(self) -> None:
         """发布的 Skill 应能直接维护市场缓存和因子结果。"""
         with TemporaryDirectory() as temporary_directory:
@@ -165,8 +182,46 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.assertTrue(
                 (staging_root / "code" / "src" / "factors" / "incremental.py").is_file()
             )
+            self.assertTrue(
+                (staging_root / "code" / "src" / "pipeline_state.py").is_file()
+            )
             skill_text = (staging_root / "SKILL.md").read_text(encoding="utf-8")
             self.assertIn("update_factor_cache.py", skill_text)
+            self.assertIn("--fresh", skill_text)
+            self.assertIn(".pipeline_cache/run_state.json", skill_text)
+
+    def test_search_skill_is_built_from_framework_source(self) -> None:
+        """搜索 Skill 应包含项目搜索入口、框架代码和灵境元数据。"""
+        with TemporaryDirectory() as temporary_directory:
+            staging_root = Path(temporary_directory) / "factor-search-skill"
+            staging_root.mkdir()
+
+            _build_search_skill(staging_root)
+
+            self.assertTrue((staging_root / "SKILL.md").is_file())
+            self.assertTrue(
+                (staging_root / "agents" / "openai.yaml").is_file()
+            )
+            self.assertTrue(
+                (staging_root / "scripts" / "run_factor_search.py").is_file()
+            )
+            self.assertTrue(
+                (
+                    staging_root
+                    / "code"
+                    / "src"
+                    / "factors"
+                    / "search_operators.py"
+                ).is_file()
+            )
+            skill_text = (staging_root / "SKILL.md").read_text(
+                encoding="utf-8"
+            )
+            openai_text = (staging_root / "agents" / "openai.yaml").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("name: factor-search-skill", skill_text)
+            self.assertIn("$factor-search-skill", openai_text)
 
     def test_tmux_command_retains_failed_log_and_deletes_successful_log(self) -> None:
         """后台命令应使用 pipefail，并按 Python 退出码决定日志去留。"""

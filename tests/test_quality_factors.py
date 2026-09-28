@@ -1,4 +1,4 @@
-"""使用 synthetic 数据验证质量因子及公共参数。"""
+"""使用 synthetic 数据验证质量因子及框架后处理配置。"""
 
 from __future__ import annotations
 
@@ -10,9 +10,6 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from factors.quality_factors.code.QualityFactor import (
-    parse_quality_factor_parameters,
-)
 from factors.quality_factors.code.utils import (
     QualityBasePanel,
     aligned_financial_ratio,
@@ -139,30 +136,19 @@ class QualityFactorTests(unittest.TestCase):
         ]
         self.assertTrue(np.isfinite(actual))
 
-    def test_every_yaml_exposes_common_defaults(self) -> None:
-        """全部质量配置都显式声明统一的可配置后处理参数。"""
-        for config_path in QUALITY_CONFIG_DIRECTORY.glob("*.yaml"):
-            params = yaml.safe_load(config_path.read_text(encoding="utf-8"))["params"]
-            self.assertEqual(params["rolling_mean_window"], 1)
-            self.assertEqual(params["min_periods"], 1)
-            self.assertFalse(params["neutralize"])
-            self.assertFalse(params["reverse"])
-            self.assertEqual(params["winsorize"]["min_quantile"], 0.0)
-            self.assertEqual(params["winsorize"]["max_quantile"], 1.0)
-
-    def test_min_periods_validation_matches_growth_factors(self) -> None:
-        """min_periods 可配置但不得超过平滑窗口。"""
-        params = {
-            "base_factor": "roe_level",
-            "operator": "raw",
-            "rolling_mean_window": 4,
-            "min_periods": 2,
+    def test_every_yaml_uses_framework_postprocess(self) -> None:
+        """全部质量配置只在框架层声明截面后处理。"""
+        forbidden_keys = {
+            "rolling_mean_window",
+            "min_periods",
+            "neutralize",
+            "winsorize",
+            "reverse",
         }
-        parsed = parse_quality_factor_parameters(params)
-        self.assertEqual(parsed.min_periods, 2)
-        params["min_periods"] = 5
-        with self.assertRaisesRegex(ValueError, "min_periods"):
-            parse_quality_factor_parameters(params)
+        for config_path in QUALITY_CONFIG_DIRECTORY.glob("*.yaml"):
+            factor_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            self.assertFalse(forbidden_keys & factor_config["params"].keys())
+            self.assertIn("cross_section", factor_config["postprocess"])
 
 
 class QualityUtilityTests(unittest.TestCase):

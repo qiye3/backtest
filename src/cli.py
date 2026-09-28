@@ -15,6 +15,7 @@ from tqdm.auto import tqdm
 from src.analysis import evaluate_overall, save_overall_results
 from src.backtest import iter_backtests, iter_weight_backtests
 from src.backtest.io import (
+    CHECKPOINT_FILE_NAMES,
     RESULT_FILE_NAMES,
     build_metrics_summary,
     load_backtest_checkpoint,
@@ -29,12 +30,14 @@ from src.data.return_data import load_return_panel
 from src.data.style_exposure import load_or_build_style_exposures
 from src.factors import iter_factor_panels, load_factors
 from src.factors.domains import build_domain_masks, parse_factor_output_name
+from src.factors.engine import _factor_output_names
 from src.factors.incremental import (
     record_factor_update_state,
     validate_factor_market_revision,
 )
 from src.factors.io import (
     FACTOR_FILE_NAME,
+    FactorPanelSource,
     find_factor_names,
     load_factor_panel,
     save_factor_panels,
@@ -59,6 +62,11 @@ from src.output_layout import (
     factor_output_root,
     strategy_output_root,
     summary_output_root,
+)
+from src.pipeline_state import (
+    PipelineState,
+    build_pipeline_signature,
+    pipeline_run_lock,
 )
 from src.plotter import (
     plot_factor,
@@ -126,20 +134,31 @@ def run(
     config: RunConfig,
     show_progress: bool = False,
     market_data: MarketData | None = None,
+    fresh: bool = False,
 ) -> RunSummary:
     """按配置运行阶段；批量编排可传入已构造的共享 MarketData。"""
-    with _CliProgress(config, show_progress) as progress:
-        return _run_pipeline(config, progress, market_data)
+    with pipeline_run_lock(config.output_root):
+        with _CliProgress(config, show_progress) as progress:
+            return _run_pipeline(config, progress, market_data, fresh)
 
 
 def _run_pipeline(
     config: RunConfig,
     progress: _CliProgress,
     shared_market_data: MarketData | None,
+    fresh: bool,
 ) -> RunSummary:
     """以磁盘 checkpoint 隔离各阶段，并在成功后发布最终结果。"""
     cache_root = config.output_root / PIPELINE_CACHE_DIRECTORY
-    _prepare_pipeline_cache(cache_root)
+
+    progress.start("market_data")
+    market_data = shared_market_data or _load_market_data(config)
+    progress.complete("market_data")
+    pipeline_state = PipelineState.open(
+        cache_root=cache_root,
+        signature=build_pipeline_signature(config, market_data),
+        fresh=fresh,
+    )
     factor_cache_root = factor_output_root(cache_root)
     strategy_cache_root = strategy_output_root(cache_root)
     summary_cache_root = summary_output_root(cache_root)
@@ -157,26 +176,28 @@ def _run_pipeline(
     run_settings = config.raw["run"]
     stage_counts: dict[str, int] = {}
 
-    progress.start("market_data")
-    market_data = shared_market_data or _load_market_data(config)
-    progress.complete("market_data")
     return_panel = _load_external_return_panel(config)
 
-    factor_source = config.factor_result_root
+    factor_source: FactorPanelSource
+    if config.factor_parquet_files is None:
+        factor_source = config.factor_result_root
+    else:
+        factor_source = config.factor_parquet_files
     if run_settings["factors"]:
         progress.start("factors")
         factor_names = _calculate_factor_checkpoint(
             config,
             market_data,
             factor_cache_root,
+            pipeline_state,
         )
         factor_source = factor_cache_root
         stage_counts["factors"] = len(factor_names)
         progress.complete("factors")
     else:
-        if market_data is not None:
+        if market_data is not None and config.factor_parquet_files is None:
             validate_factor_market_revision(config, market_data)
-        factor_names = find_factor_names(config.factor_result_root)
+        factor_names = find_factor_names(factor_source)
 
     published_factor_root = factor_output_root(config.output_root)
     published_strategy_root = strategy_output_root(config.output_root)
@@ -191,6 +212,7 @@ def _run_pipeline(
             factor_cache_root,
             summary_cache_root,
             return_panel,
+            pipeline_state,
         )
         group_return_source = factor_cache_root
         stage_counts["group_return"] = len(group_paths)
@@ -204,14 +226,21 @@ def _run_pipeline(
 
     if run_settings["overall_evaluation"]:
         progress.start("overall_evaluation")
-        _run_overall_evaluation(
-            config,
-            factor_names,
-            factor_source,
-            group_return_source,
-            market_data,
-            cache_root,
+        pending_overall = pipeline_state.pending_items(
+            "overall_evaluation",
+            ["all"],
+            {"all": _overall_required_paths(config, cache_root)},
         )
+        if pending_overall:
+            _run_overall_evaluation(
+                config,
+                factor_names,
+                factor_source,
+                group_return_source,
+                market_data,
+                cache_root,
+            )
+            pipeline_state.mark_complete("overall_evaluation", "all")
         stage_counts["overall_evaluation"] = len(factor_names)
         progress.complete("overall_evaluation")
         _publish_cached_tree(cache_root, config.output_root, "00_overall")
@@ -233,6 +262,7 @@ def _run_pipeline(
             factor_cache_root,
             mode,
             return_panel,
+            pipeline_state,
         )
         backtest_sources[mode] = factor_cache_root
         stage_counts[stage_name] = len(backtest_paths)
@@ -260,6 +290,7 @@ def _run_pipeline(
             factor_source,
             market_data,
             strategy_cache_root,
+            pipeline_state,
         )
         strategy_source = strategy_cache_root
         stage_counts["strategies"] = len(strategy_names)
@@ -274,6 +305,7 @@ def _run_pipeline(
             strategy_source=strategy_source,
             market_data=market_data,
             cache_root=strategy_cache_root,
+            pipeline_state=pipeline_state,
         )
         _publish_strategy_figure_stage(
             config=config,
@@ -299,6 +331,7 @@ def _run_pipeline(
             strategy_cache_root,
             mode,
             return_panel,
+            pipeline_state,
         )
         strategy_backtest_sources[mode] = strategy_cache_root
         stage_counts[stage_name] = len(strategy_paths)
@@ -335,6 +368,7 @@ def _run_pipeline(
                 backtest_sources,
                 factor_cache_root,
                 remaining_factor_plots,
+                pipeline_state,
             )
         remaining_strategy_plots = _remaining_strategy_plot_names(run_settings)
         if remaining_strategy_plots:
@@ -346,6 +380,7 @@ def _run_pipeline(
                 market_data,
                 strategy_cache_root,
                 remaining_strategy_plots,
+                pipeline_state,
             )
         stage_counts["plotter"] = len(factor_names) + len(strategy_names)
         progress.complete("plotter")
@@ -369,13 +404,6 @@ def _run_pipeline(
     return RunSummary(stage_counts=stage_counts, output_paths=output_paths)
 
 
-def _prepare_pipeline_cache(cache_root: Path) -> None:
-    """清理上次失败留下的 checkpoint，并创建本次临时目录。"""
-    if cache_root.exists():
-        shutil.rmtree(cache_root)
-    cache_root.mkdir(parents=True)
-
-
 def _load_external_return_panel(config: RunConfig) -> pd.DataFrame | None:
     """一次读取本次评价和 simple 回测共享的外部日收益。"""
     if config.external_return_path is None:
@@ -392,7 +420,7 @@ def _load_external_return_panel(config: RunConfig) -> pd.DataFrame | None:
 
 def _load_factor_items(
     factor_names: Iterable[str],
-    factor_source: Path,
+    factor_source: FactorPanelSource,
 ) -> Iterable[tuple[str, pd.DataFrame]]:
     """按需逐个读取因子面板，使在途内存由并发数而非因子总数决定。"""
     return (
@@ -501,6 +529,7 @@ def _calculate_factor_checkpoint(
     config: RunConfig,
     market_data: MarketData,
     cache_root: Path,
+    pipeline_state: PipelineState,
 ) -> tuple[str, ...]:
     """有界并行计算因子，并在单个结果完成后立即写入 checkpoint。"""
     factors = load_factors(config.factor_config_directory)
@@ -521,9 +550,38 @@ def _calculate_factor_checkpoint(
             market_data,
         )
         domain_factor_names = config.factor_domains.factor_names
-    output_names = []
+    selected_domain_factors = set(domain_factor_names)
+    domain_names = tuple((domain_masks or {}).keys())
+    expected_outputs = {
+        factor.name: tuple(
+            _factor_output_names(
+                factor,
+                domain_names if factor.name in selected_domain_factors else (),
+                config.selected_factor_variants,
+            )
+        )
+        for factor in factors
+    }
+    required_paths = {
+        factor_name: tuple(
+            cache_root / output_name / FACTOR_FILE_NAME
+            for output_name in output_names
+        )
+        for factor_name, output_names in expected_outputs.items()
+    }
+    pending_factor_names = set(
+        pipeline_state.pending_items(
+            "factors",
+            [factor.name for factor in factors],
+            required_paths,
+        )
+    )
+    pending_factors = [
+        factor for factor in factors if factor.name in pending_factor_names
+    ]
+    saved_output_counts = {factor.name: 0 for factor in pending_factors}
     for factor_name, factor_panel in iter_factor_panels(
-        factors=factors,
+        factors=pending_factors,
         market_data=market_data,
         max_workers=config.raw["run"]["max_workers"],
         domain_masks=domain_masks,
@@ -531,7 +589,17 @@ def _calculate_factor_checkpoint(
         selected_variants=config.selected_factor_variants,
     ):
         save_factor_panels({factor_name: factor_panel}, cache_root)
-        output_names.append(factor_name)
+        base_factor_name, _, _ = parse_factor_output_name(factor_name)
+        saved_output_counts[base_factor_name] += 1
+        if saved_output_counts[base_factor_name] == len(
+            expected_outputs[base_factor_name]
+        ):
+            pipeline_state.mark_complete("factors", base_factor_name)
+    output_names = [
+        output_name
+        for factor in factors
+        for output_name in expected_outputs[factor.name]
+    ]
     return tuple(sorted(output_names, key=_factor_output_sort_key))
 
 
@@ -557,16 +625,29 @@ def _factor_output_sort_key(factor_name: str) -> tuple[str, int, str, str]:
 def _calculate_group_return_checkpoint(
     config: RunConfig,
     factor_names: Iterable[str],
-    factor_source: Path,
+    factor_source: FactorPanelSource,
     market_data: MarketData,
     factor_cache_root: Path,
     summary_cache_root: Path,
     return_panel: pd.DataFrame | None,
+    pipeline_state: PipelineState,
 ) -> dict[str, Path]:
     """逐因子评价、保存和绘图，仅累计轻量筛选汇总。"""
-    factor_items = _load_factor_items(factor_names, factor_source)
-    result_paths = {}
-    screening_summaries = []
+    ordered_factor_names = tuple(factor_names)
+    required_paths = {
+        factor_name: _group_return_required_paths(
+            config,
+            factor_cache_root,
+            factor_name,
+        )
+        for factor_name in ordered_factor_names
+    }
+    pending_factor_names = pipeline_state.pending_items(
+        "group_return",
+        ordered_factor_names,
+        required_paths,
+    )
+    factor_items = _load_factor_items(pending_factor_names, factor_source)
     for factor_name, factor_panel, evaluation_result in iter_factor_evaluations(
         factor_items=factor_items,
         market_data=market_data,
@@ -574,17 +655,9 @@ def _calculate_group_return_checkpoint(
         max_workers=config.raw["run"]["max_workers"],
         return_panel=return_panel,
     ):
-        result_paths.update(
-            save_evaluation_results(
-                {factor_name: evaluation_result},
-                factor_cache_root,
-            )
-        )
-        screening_summaries.append(
-            build_factor_screening_summary(
-                {factor_name: evaluation_result},
-                config.raw["group_return"],
-            )
+        save_evaluation_results(
+            {factor_name: evaluation_result},
+            factor_cache_root,
         )
         if config.raw["run"]["plotter"]:
             plot_factor(
@@ -596,29 +669,88 @@ def _calculate_group_return_checkpoint(
                 evaluation_settings=_evaluation_plot_settings(config),
                 plot_names={"distribution", "evaluation"},
             )
+        pipeline_state.mark_complete("group_return", factor_name)
 
+    screening_summaries = []
+    for factor_name in ordered_factor_names:
+        evaluation_result = load_evaluation_result(
+            factor_name,
+            factor_cache_root,
+        )
+        if evaluation_result is None:
+            raise FileNotFoundError(f"缺少因子评价 checkpoint: {factor_name}")
+        screening_summaries.append(
+            build_factor_screening_summary(
+                {factor_name: evaluation_result},
+                config.raw["group_return"],
+            )
+        )
     screening_summary = pd.concat(screening_summaries, ignore_index=True)
     save_factor_summaries(
         build_frequency_summaries(screening_summary, None),
         summary_cache_root,
     )
-    return result_paths
+    return {
+        factor_name: factor_cache_root / factor_name / GROUP_RETURN_FILE_NAME
+        for factor_name in ordered_factor_names
+    }
+
+
+def _group_return_required_paths(
+    config: RunConfig,
+    factor_cache_root: Path,
+    factor_name: str,
+) -> tuple[Path, ...]:
+    required_paths = [
+        factor_cache_root / factor_name / GROUP_RETURN_FILE_NAME,
+    ]
+    if not config.raw["run"]["plotter"]:
+        return tuple(required_paths)
+    figure_names = []
+    if config.raw["plots"]["distribution"]["enabled"]:
+        figure_names.append("00_factor_distribution")
+    if config.raw["plots"]["evaluation"]["enabled"]:
+        figure_names.append("01_evaluation")
+    for figure_name in figure_names:
+        for output_format in config.raw["plots"]["formats"]:
+            required_paths.append(
+                factor_cache_root
+                / factor_name
+                / "figures"
+                / f"{figure_name}.{output_format}"
+            )
+    return tuple(required_paths)
 
 
 def _calculate_backtest_checkpoint(
     config: RunConfig,
     factor_names: Iterable[str],
-    factor_source: Path,
+    factor_source: FactorPanelSource,
     market_data: MarketData,
     cache_root: Path,
     mode: str,
     return_panel: pd.DataFrame | None,
+    pipeline_state: PipelineState,
 ) -> dict[str, Path]:
     """复用整阶段回测上下文，逐因子保存结果并绘制当前模式。"""
     section_name = f"{mode}_backtest"
     max_workers = config.raw["run"]["max_workers"]
-    checkpoint_paths = {}
-    factor_items = _load_factor_items(factor_names, factor_source)
+    ordered_factor_names = tuple(factor_names)
+    required_paths = {
+        factor_name: _backtest_required_paths(
+            config,
+            cache_root,
+            factor_name,
+            mode,
+        )
+        for factor_name in ordered_factor_names
+    }
+    pending_factor_names = pipeline_state.pending_items(
+        section_name,
+        ordered_factor_names,
+        required_paths,
+    )
+    factor_items = _load_factor_items(pending_factor_names, factor_source)
     stage_return_panel = return_panel if mode == "simple" else None
     for factor_name, backtest_result in iter_backtests(
         factor_items=factor_items,
@@ -630,12 +762,10 @@ def _calculate_backtest_checkpoint(
         return_panel=stage_return_panel,
         collect_details=config.raw["output"]["save_backtest_details"],
     ):
-        checkpoint_paths.update(
-            save_backtest_checkpoints(
-                {factor_name: backtest_result},
-                cache_root,
-                mode,
-            )
+        save_backtest_checkpoints(
+            {factor_name: backtest_result},
+            cache_root,
+            mode,
         )
         if config.raw["run"]["plotter"]:
             plot_factor(
@@ -648,19 +778,61 @@ def _calculate_backtest_checkpoint(
                 backtest_settings=_backtest_plot_settings(config),
                 plot_names={mode},
             )
-    return checkpoint_paths
+        pipeline_state.mark_complete(section_name, factor_name)
+    return {
+        factor_name: cache_root / factor_name / CHECKPOINT_FILE_NAMES[mode]
+        for factor_name in ordered_factor_names
+    }
+
+
+def _backtest_required_paths(
+    config: RunConfig,
+    cache_root: Path,
+    factor_name: str,
+    mode: str,
+) -> tuple[Path, ...]:
+    required_paths = [
+        cache_root / factor_name / CHECKPOINT_FILE_NAMES[mode],
+    ]
+    if (
+        config.raw["run"]["plotter"]
+        and config.raw["plots"][mode]["enabled"]
+    ):
+        figure_name = "02_simple_backtest" if mode == "simple" else "03_account_backtest"
+        for output_format in config.raw["plots"]["formats"]:
+            required_paths.append(
+                cache_root
+                / factor_name
+                / "figures"
+                / f"{figure_name}.{output_format}"
+            )
+    return tuple(required_paths)
 
 
 def _calculate_strategy_target_checkpoints(
     config: RunConfig,
-    factor_source: Path,
+    factor_source: FactorPanelSource,
     market_data: MarketData,
     cache_root: Path,
+    pipeline_state: PipelineState,
 ) -> tuple[str, ...]:
     """逐策略读取 Factor、构建目标权重并立即落盘。"""
     strategies = load_strategies(config.strategy_config_directory)
-    strategy_names = []
+    strategy_names = tuple(strategy.name for strategy in strategies)
+    required_paths = {
+        strategy_name: (cache_root / strategy_name / TARGET_FILE_NAME,)
+        for strategy_name in strategy_names
+    }
+    pending_strategy_names = set(
+        pipeline_state.pending_items(
+            "strategies",
+            strategy_names,
+            required_paths,
+        )
+    )
     for strategy in strategies:
+        if strategy.name not in pending_strategy_names:
+            continue
         signal_panel = load_factor_panel(strategy.factor_name, factor_source)
         strategy_result = build_strategy_targets(
             strategy=strategy,
@@ -669,8 +841,8 @@ def _calculate_strategy_target_checkpoints(
             settings=config.raw["strategies"],
         )
         save_strategy_targets(strategy_result, cache_root)
-        strategy_names.append(strategy.name)
-    return tuple(strategy_names)
+        pipeline_state.mark_complete("strategies", strategy.name)
+    return strategy_names
 
 
 def _calculate_strategy_analysis_checkpoints(
@@ -679,8 +851,26 @@ def _calculate_strategy_analysis_checkpoints(
     strategy_source: Path,
     market_data: MarketData,
     cache_root: Path,
+    pipeline_state: PipelineState,
 ) -> None:
     """复用全周期风格缓存并保存各策略风险暴露明细。"""
+    ordered_strategy_names = tuple(strategy_names)
+    required_paths = {
+        strategy_name: _strategy_analysis_required_paths(
+            config,
+            strategy_name,
+            cache_root,
+            load_strategy_targets(strategy_name, strategy_source),
+        )
+        for strategy_name in ordered_strategy_names
+    }
+    pending_strategy_names = pipeline_state.pending_items(
+        "strategy_analysis",
+        ordered_strategy_names,
+        required_paths,
+    )
+    if not pending_strategy_names:
+        return
     style_exposures = load_or_build_style_exposures(
         market_data,
         refresh=config.raw["run"]["refresh_market_data"],
@@ -690,7 +880,7 @@ def _calculate_strategy_analysis_checkpoints(
         "ind_class_code",
     )
     benchmark_weights_by_index: dict[str, pd.DataFrame] = {}
-    for strategy_name in strategy_names:
+    for strategy_name in pending_strategy_names:
         strategy_result = load_strategy_targets(strategy_name, strategy_source)
         benchmark_index = strategy_result["benchmark_index"]
         if benchmark_index not in benchmark_weights_by_index:
@@ -746,6 +936,36 @@ def _calculate_strategy_analysis_checkpoints(
                     ),
                     rebalance_label=interval_label,
                 )
+        pipeline_state.mark_complete("strategy_analysis", strategy_name)
+
+
+def _strategy_analysis_required_paths(
+    config: RunConfig,
+    strategy_name: str,
+    cache_root: Path,
+    target_result: Mapping[str, Any],
+) -> tuple[Path, ...]:
+    analysis_root = cache_root / strategy_name / "analysis"
+    figure_root = cache_root / strategy_name / "figures"
+    required_paths = []
+    for interval in target_result["periods"]:
+        interval_label = _strategy_interval_label(
+            target_result["rebalance_frequency"],
+            interval,
+        )
+        required_paths.extend(
+            [
+                analysis_root / f"concentration_{interval_label}.parquet",
+                analysis_root / f"industry_exposure_{interval_label}.parquet",
+                analysis_root / f"style_exposure_{interval_label}.parquet",
+            ]
+        )
+        if config.raw["run"]["plotter"] and config.raw["plots"]["strategy"]["enabled"]:
+            for output_format in config.raw["plots"]["formats"]:
+                required_paths.append(
+                    figure_root / f"risk_exposure_{interval_label}.{output_format}"
+                )
+    return tuple(required_paths)
 
 
 def _calculate_strategy_backtest_checkpoints(
@@ -756,12 +976,29 @@ def _calculate_strategy_backtest_checkpoints(
     cache_root: Path,
     mode: str,
     return_panel: pd.DataFrame | None,
+    pipeline_state: PipelineState,
 ) -> dict[str, Path]:
     """复用整阶段价格上下文，逐策略运行并保存目标权重回测。"""
     settings = config.raw[f"{mode}_backtest"]
-    checkpoint_paths = {}
+    ordered_strategy_names = tuple(strategy_names)
+    stage_name = f"strategy_{mode}_backtest"
+    required_paths = {
+        strategy_name: _strategy_backtest_required_paths(
+            config,
+            strategy_name,
+            strategy_source,
+            cache_root,
+            mode,
+        )
+        for strategy_name in ordered_strategy_names
+    }
+    pending_strategy_names = pipeline_state.pending_items(
+        stage_name,
+        ordered_strategy_names,
+        required_paths,
+    )
     strategy_items = _load_strategy_backtest_items(
-        strategy_names=strategy_names,
+        strategy_names=pending_strategy_names,
         strategy_source=strategy_source,
         market_data=market_data,
         settings=settings,
@@ -776,12 +1013,10 @@ def _calculate_strategy_backtest_checkpoints(
         return_panel=return_panel if mode == "simple" else None,
         collect_details=config.raw["output"]["save_backtest_details"],
     ):
-        checkpoint_paths.update(
-            save_backtest_checkpoints(
-                {strategy_name: backtest_result},
-                cache_root,
-                mode,
-            )
+        save_backtest_checkpoints(
+            {strategy_name: backtest_result},
+            cache_root,
+            mode,
         )
         if config.raw["run"]["plotter"] and config.raw["plots"]["strategy"]["enabled"]:
             target_result = load_strategy_targets(
@@ -797,7 +1032,42 @@ def _calculate_strategy_backtest_checkpoints(
                 backtest_settings=settings,
                 cache_root=cache_root,
             )
-    return checkpoint_paths
+        pipeline_state.mark_complete(stage_name, strategy_name)
+    return {
+        strategy_name: cache_root / strategy_name / CHECKPOINT_FILE_NAMES[mode]
+        for strategy_name in ordered_strategy_names
+    }
+
+
+def _strategy_backtest_required_paths(
+    config: RunConfig,
+    strategy_name: str,
+    strategy_source: Path,
+    cache_root: Path,
+    mode: str,
+) -> tuple[Path, ...]:
+    required_paths = [
+        cache_root / strategy_name / CHECKPOINT_FILE_NAMES[mode],
+    ]
+    if not (
+        config.raw["run"]["plotter"]
+        and config.raw["plots"]["strategy"]["enabled"]
+    ):
+        return tuple(required_paths)
+    target_result = load_strategy_targets(strategy_name, strategy_source)
+    for interval in target_result["periods"]:
+        interval_label = _strategy_interval_label(
+            target_result["rebalance_frequency"],
+            interval,
+        )
+        for output_format in config.raw["plots"]["formats"]:
+            required_paths.append(
+                cache_root
+                / strategy_name
+                / "figures"
+                / f"{mode}_{interval_label}.{output_format}"
+            )
+    return tuple(required_paths)
 
 
 def _load_strategy_backtest_items(
@@ -859,17 +1129,37 @@ def _save_factor_summary_checkpoint(
 def _plot_factor_checkpoints(
     config: RunConfig,
     factor_names: Iterable[str],
-    factor_source: Path,
+    factor_source: FactorPanelSource,
     group_return_source: Path,
     backtest_sources: Mapping[str, Path],
     cache_root: Path,
     plot_names: Iterable[str],
+    pipeline_state: PipelineState | None = None,
 ) -> None:
     """逐因子加载既有结果，只补画尚未随计算阶段生成的图。"""
     requested_plots = set(plot_names)
     if not requested_plots:
         return
-    for factor_name in factor_names:
+    ordered_factor_names = tuple(factor_names)
+    required_paths = {
+        factor_name: _factor_plot_required_paths(
+            config,
+            factor_name,
+            cache_root,
+            requested_plots,
+        )
+        for factor_name in ordered_factor_names
+    }
+    pending_factor_names = (
+        pipeline_state.pending_items(
+            "factor_plotter",
+            ordered_factor_names,
+            required_paths,
+        )
+        if pipeline_state is not None
+        else ordered_factor_names
+    )
+    for factor_name in pending_factor_names:
         plot_factor(
             factor_name=factor_name,
             factor_panel=(
@@ -912,6 +1202,28 @@ def _plot_factor_checkpoints(
             backtest_settings=_backtest_plot_settings(config),
             plot_names=requested_plots,
         )
+        if pipeline_state is not None:
+            pipeline_state.mark_complete("factor_plotter", factor_name)
+
+
+def _factor_plot_required_paths(
+    config: RunConfig,
+    factor_name: str,
+    cache_root: Path,
+    plot_names: set[str],
+) -> tuple[Path, ...]:
+    """列出纯绘图阶段中一个因子应生成的全部图片。"""
+    figure_names = {
+        "distribution": "00_factor_distribution",
+        "evaluation": "01_evaluation",
+        "simple": "02_simple_backtest",
+        "account": "03_account_backtest",
+    }
+    return tuple(
+        cache_root / factor_name / "figures" / f"{figure_names[plot_name]}.{output_format}"
+        for plot_name in sorted(plot_names)
+        for output_format in config.raw["plots"]["formats"]
+    )
 
 
 def _plot_strategy_checkpoints(
@@ -922,12 +1234,33 @@ def _plot_strategy_checkpoints(
     market_data: MarketData,
     cache_root: Path,
     plot_names: Iterable[str],
+    pipeline_state: PipelineState | None = None,
 ) -> None:
     """逐策略加载既有结果，只补画尚未随计算阶段生成的图。"""
     if not config.raw["plots"]["strategy"]["enabled"]:
         return
     requested_plots = set(plot_names)
-    for strategy_name in strategy_names:
+    ordered_strategy_names = tuple(strategy_names)
+    required_paths = {
+        strategy_name: _strategy_plot_required_paths(
+            config,
+            strategy_name,
+            strategy_source,
+            cache_root,
+            requested_plots,
+        )
+        for strategy_name in ordered_strategy_names
+    }
+    pending_strategy_names = (
+        pipeline_state.pending_items(
+            "strategy_plotter",
+            ordered_strategy_names,
+            required_paths,
+        )
+        if pipeline_state is not None
+        else ordered_strategy_names
+    )
+    for strategy_name in pending_strategy_names:
         target_result = load_strategy_targets(strategy_name, strategy_source)
         for mode in ["simple", "account"]:
             if mode not in requested_plots:
@@ -949,6 +1282,28 @@ def _plot_strategy_checkpoints(
                 backtest_settings=config.raw[f"{mode}_backtest"],
                 cache_root=cache_root,
             )
+        if pipeline_state is not None:
+            pipeline_state.mark_complete("strategy_plotter", strategy_name)
+
+
+def _strategy_plot_required_paths(
+    config: RunConfig,
+    strategy_name: str,
+    strategy_source: Path,
+    cache_root: Path,
+    plot_names: set[str],
+) -> tuple[Path, ...]:
+    """列出纯绘图阶段中一个策略应生成的全部图片。"""
+    target_result = load_strategy_targets(strategy_name, strategy_source)
+    return tuple(
+        cache_root
+        / strategy_name
+        / "figures"
+        / f"{mode}_{_strategy_interval_label(target_result['rebalance_frequency'], interval)}.{output_format}"
+        for mode in sorted(plot_names)
+        for interval in target_result["periods"]
+        for output_format in config.raw["plots"]["formats"]
+    )
 
 
 def _plot_strategy_backtest_result(
@@ -1171,7 +1526,7 @@ def _backtest_plot_settings(
 def _run_overall_evaluation(
     config: RunConfig,
     factor_names: Iterable[str],
-    factor_source: Path,
+    factor_source: FactorPanelSource,
     group_return_source: Path,
     market_data: MarketData,
     cache_root: Path,
@@ -1202,6 +1557,31 @@ def _run_overall_evaluation(
         factor_panels=factor_panels,
         evaluation_settings=config.raw["group_return"],
     )
+
+
+def _overall_required_paths(
+    config: RunConfig,
+    cache_root: Path,
+) -> tuple[Path, ...]:
+    output_root = cache_root / "00_overall"
+    required_paths = [
+        output_root / "factor_correlation.csv",
+        output_root / "factor_ic.csv",
+        output_root / "factor_return.csv",
+    ]
+    figure_names = [
+        "factor_correlation_heatmap",
+        "factor_ic_distribution",
+        "factor_return_distribution",
+    ]
+    if config.raw["plots"]["overall"]["group_return_grid"]["enabled"]:
+        figure_names.append("group_return_4week_grid")
+    if config.raw["plots"]["overall"]["factor_distribution_grid"]["enabled"]:
+        figure_names.append("factor_distribution_grid")
+    for figure_name in figure_names:
+        for output_format in config.raw["plots"]["formats"]:
+            required_paths.append(output_root / f"{figure_name}.{output_format}")
+    return tuple(required_paths)
 
 
 def _prepare_retained_checkpoints(
@@ -1543,9 +1923,14 @@ def main() -> None:
         required=True,
         help="包含阶段开关和全部设置的主 YAML 路径",
     )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="清空当前输出目录的 .pipeline_cache 并从头运行",
+    )
     arguments = parser.parse_args()
     config = load_config(arguments.config)
-    summary = run(config, show_progress=True)
+    summary = run(config, show_progress=True, fresh=arguments.fresh)
     for stage_name, count in summary.stage_counts.items():
         print(f"{stage_name}: {count} item(s)")
 
