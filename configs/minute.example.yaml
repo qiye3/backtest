@@ -1,4 +1,4 @@
-run_name: minute_smoke_202504_v3
+run_name: minute_smoke_202504_v4
 output_root: ../runs
 
 data:
@@ -8,14 +8,17 @@ data:
   universe_name: smoke_600000_000001
   start_date: 2025-04-01
   end_date: 2025-04-30
+  daily_status_path: null
 
 targets:
+  mode: file
   path: ../examples/data/minute_targets.csv
   date_only_signal_time: "14:55:00"
 
 account:
   initial_capital: 10000000
   liquidate_at_end: false
+  rights_issue_policy: subscribe_or_fail
 
 execution:
   slippage_bps: 5

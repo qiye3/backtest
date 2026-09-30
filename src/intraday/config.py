@@ -13,7 +13,7 @@ import yaml
 
 @dataclass(frozen=True)
 class MinuteDataConfig:
-    """描述 zxy 分钟归档、日线参考数据和按需缓存位置。"""
+    """描述分钟归档、日线参考数据和按需缓存位置。"""
 
     minute_root: Path
     daily_root: Path | None
@@ -21,22 +21,36 @@ class MinuteDataConfig:
     universe_name: str
     start_date: pd.Timestamp
     end_date: pd.Timestamp
+    daily_status_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class StrategyImplementationConfig:
+    """描述一个可动态导入的分钟日频策略。"""
+
+    module: str
+    class_name: str
+    params: dict[str, Any]
 
 
 @dataclass(frozen=True)
 class TargetConfig:
-    """描述统一目标仓位文件及日期输入的可得时刻。"""
+    """描述外部目标文件或分钟日频策略。"""
 
-    path: Path
+    path: Path | None
     date_only_signal_time: str
+    mode: str = "file"
+    universe_path: Path | None = None
+    implementation: StrategyImplementationConfig | None = None
 
 
 @dataclass(frozen=True)
 class AccountConfig:
-    """描述首版多头现金账户边界。"""
+    """描述多头现金账户边界。"""
 
     initial_capital: float
     liquidate_at_end: bool
+    rights_issue_policy: str = "subscribe_or_fail"
 
 
 @dataclass(frozen=True)
@@ -90,72 +104,153 @@ def load_minute_config(config_path: str | Path) -> MinuteBacktestConfig:
         {"run_name", "output_root", "data", "targets", "account", "execution", "costs"},
         "root",
     )
-    run_name = _nonempty_string(raw_values["run_name"], "run_name")
     data_values = _mapping(raw_values["data"], "data")
     target_values = _mapping(raw_values["targets"], "targets")
     account_values = _mapping(raw_values["account"], "account")
     execution_values = _mapping(raw_values["execution"], "execution")
     cost_values = _mapping(raw_values["costs"], "costs")
 
-    _check_keys(
-        data_values,
-        {"minute_root", "daily_root", "cache_root", "universe_name", "start_date", "end_date"},
-        "data",
-    )
-    start_date = _date(data_values["start_date"], "data.start_date")
-    end_date = _date(data_values["end_date"], "data.end_date")
-    if end_date < start_date:
-        raise ValueError("data.end_date 不能早于 data.start_date")
-    data_config = MinuteDataConfig(
-        minute_root=_existing_directory(
-            resolved_path,
-            data_values["minute_root"],
-            "data.minute_root",
-        ),
-        daily_root=_optional_existing_directory(
-            resolved_path,
-            data_values["daily_root"],
-            "data.daily_root",
-        ),
-        cache_root=_resolve_path(resolved_path, data_values["cache_root"]),
-        universe_name=_nonempty_string(data_values["universe_name"], "data.universe_name"),
-        start_date=start_date,
-        end_date=end_date,
+    return MinuteBacktestConfig(
+        path=resolved_path,
+        run_name=_nonempty_string(raw_values["run_name"], "run_name"),
+        output_root=_resolve_path(resolved_path, raw_values["output_root"]),
+        data=_load_data_config(resolved_path, data_values),
+        targets=_load_target_config(resolved_path, target_values),
+        account=_load_account_config(account_values),
+        execution=_load_execution_config(execution_values),
+        costs=_load_cost_config(cost_values),
+        raw=dict(raw_values),
     )
 
-    _check_keys(target_values, {"path", "date_only_signal_time"}, "targets")
-    target_path = _resolve_path(resolved_path, target_values["path"])
-    if not target_path.is_file():
-        raise FileNotFoundError(f"目标仓位文件不存在: {target_path}")
+
+def _load_data_config(
+    config_path: Path,
+    values: Mapping[str, Any],
+) -> MinuteDataConfig:
+    _check_keys(
+        values,
+        {"minute_root", "daily_root", "cache_root", "universe_name", "start_date", "end_date"},
+        "data",
+        optional={"daily_status_path"},
+    )
+    start_date = _date(values["start_date"], "data.start_date")
+    end_date = _date(values["end_date"], "data.end_date")
+    if end_date < start_date:
+        raise ValueError("data.end_date 不能早于 data.start_date")
+    return MinuteDataConfig(
+        minute_root=_existing_directory(config_path, values["minute_root"], "data.minute_root"),
+        daily_root=_optional_existing_directory(
+            config_path,
+            values["daily_root"],
+            "data.daily_root",
+        ),
+        cache_root=_resolve_path(config_path, values["cache_root"]),
+        universe_name=_nonempty_string(values["universe_name"], "data.universe_name"),
+        start_date=start_date,
+        end_date=end_date,
+        daily_status_path=_optional_existing_file(
+            config_path,
+            values.get("daily_status_path"),
+            "data.daily_status_path",
+        ),
+    )
+
+
+def _load_target_config(
+    config_path: Path,
+    values: Mapping[str, Any],
+) -> TargetConfig:
+    _check_keys(
+        values,
+        set(),
+        "targets",
+        optional={
+            "mode",
+            "path",
+            "date_only_signal_time",
+            "universe_path",
+            "implementation",
+        },
+    )
+    mode = str(values.get("mode", "file")).strip()
+    if mode not in {"file", "daily_minute_strategy"}:
+        raise ValueError("targets.mode 只支持 file 或 daily_minute_strategy")
+
     signal_time = _nonempty_string(
-        target_values["date_only_signal_time"],
+        values.get("date_only_signal_time", "15:00:00"),
         "targets.date_only_signal_time",
     )
     try:
         pd.Timestamp(f"2000-01-01 {signal_time}")
     except ValueError as error:
         raise ValueError("targets.date_only_signal_time 不是有效时间") from error
-    target_config = TargetConfig(
-        path=target_path,
-        date_only_signal_time=signal_time,
-    )
 
-    _check_keys(account_values, {"initial_capital", "liquidate_at_end"}, "account")
-    initial_capital = _positive_number(
-        account_values["initial_capital"],
-        "account.initial_capital",
-    )
-    liquidate_at_end = _boolean(
-        account_values["liquidate_at_end"],
-        "account.liquidate_at_end",
-    )
-    account_config = AccountConfig(
-        initial_capital=initial_capital,
-        liquidate_at_end=liquidate_at_end,
-    )
+    if mode == "file":
+        target_path = _required_existing_file(config_path, values.get("path"), "targets.path")
+        if values.get("universe_path") is not None or values.get("implementation") is not None:
+            raise ValueError("targets.mode=file 时不能配置 universe_path 或 implementation")
+        return TargetConfig(
+            mode=mode,
+            path=target_path,
+            date_only_signal_time=signal_time,
+            universe_path=None,
+            implementation=None,
+        )
 
+    if values.get("path") is not None:
+        raise ValueError("targets.mode=daily_minute_strategy 时不能配置 path")
+    universe_path = _required_existing_file(
+        config_path,
+        values.get("universe_path"),
+        "targets.universe_path",
+    )
+    implementation_values = _mapping(values.get("implementation"), "targets.implementation")
     _check_keys(
-        execution_values,
+        implementation_values,
+        {"module", "class"},
+        "targets.implementation",
+        optional={"params"},
+    )
+    params = implementation_values.get("params", {})
+    if not isinstance(params, Mapping):
+        raise TypeError("targets.implementation.params 必须是映射")
+    implementation = StrategyImplementationConfig(
+        module=_nonempty_string(implementation_values["module"], "targets.implementation.module"),
+        class_name=_nonempty_string(
+            implementation_values["class"],
+            "targets.implementation.class",
+        ),
+        params=dict(params),
+    )
+    return TargetConfig(
+        mode=mode,
+        path=None,
+        date_only_signal_time=signal_time,
+        universe_path=universe_path,
+        implementation=implementation,
+    )
+
+
+def _load_account_config(values: Mapping[str, Any]) -> AccountConfig:
+    _check_keys(
+        values,
+        {"initial_capital", "liquidate_at_end"},
+        "account",
+        optional={"rights_issue_policy"},
+    )
+    rights_issue_policy = str(values.get("rights_issue_policy", "subscribe_or_fail")).strip()
+    if rights_issue_policy not in {"subscribe_or_fail", "ignore"}:
+        raise ValueError("account.rights_issue_policy 只支持 subscribe_or_fail 或 ignore")
+    return AccountConfig(
+        initial_capital=_positive_number(values["initial_capital"], "account.initial_capital"),
+        liquidate_at_end=_boolean(values["liquidate_at_end"], "account.liquidate_at_end"),
+        rights_issue_policy=rights_issue_policy,
+    )
+
+
+def _load_execution_config(values: Mapping[str, Any]) -> ExecutionConfig:
+    _check_keys(
+        values,
         {
             "slippage_bps",
             "max_participation_rate",
@@ -167,40 +262,36 @@ def load_minute_config(config_path: str | Path) -> MinuteBacktestConfig:
         },
         "execution",
     )
-    time_in_force = _nonempty_string(
-        execution_values["time_in_force"],
-        "execution.time_in_force",
-    )
+    time_in_force = _nonempty_string(values["time_in_force"], "execution.time_in_force")
     if time_in_force != "day":
-        raise ValueError("首版 execution.time_in_force 只支持 day")
-    execution_config = ExecutionConfig(
-        slippage_bps=_nonnegative_number(
-            execution_values["slippage_bps"],
-            "execution.slippage_bps",
-        ),
+        raise ValueError("execution.time_in_force 只支持 day")
+    return ExecutionConfig(
+        slippage_bps=_nonnegative_number(values["slippage_bps"], "execution.slippage_bps"),
         max_participation_rate=_rate(
-            execution_values["max_participation_rate"],
+            values["max_participation_rate"],
             "execution.max_participation_rate",
             allow_one=True,
         ),
-        lot_size=_positive_integer(execution_values["lot_size"], "execution.lot_size"),
+        lot_size=_positive_integer(values["lot_size"], "execution.lot_size"),
         execution_delay_bars=_positive_integer(
-            execution_values["execution_delay_bars"],
+            values["execution_delay_bars"],
             "execution.execution_delay_bars",
         ),
         time_in_force=time_in_force,
         block_one_price_limit=_boolean(
-            execution_values["block_one_price_limit"],
+            values["block_one_price_limit"],
             "execution.block_one_price_limit",
         ),
         enforce_t_plus_one=_boolean(
-            execution_values["enforce_t_plus_one"],
+            values["enforce_t_plus_one"],
             "execution.enforce_t_plus_one",
         ),
     )
 
+
+def _load_cost_config(values: Mapping[str, Any]) -> CostConfig:
     _check_keys(
-        cost_values,
+        values,
         {
             "commission_rate",
             "minimum_commission",
@@ -210,35 +301,21 @@ def load_minute_config(config_path: str | Path) -> MinuteBacktestConfig:
         },
         "costs",
     )
-    cost_config = CostConfig(
-        commission_rate=_rate(cost_values["commission_rate"], "costs.commission_rate"),
+    return CostConfig(
+        commission_rate=_rate(values["commission_rate"], "costs.commission_rate"),
         minimum_commission=_nonnegative_number(
-            cost_values["minimum_commission"],
+            values["minimum_commission"],
             "costs.minimum_commission",
         ),
-        transfer_fee_rate=_rate(
-            cost_values["transfer_fee_rate"],
-            "costs.transfer_fee_rate",
-        ),
+        transfer_fee_rate=_rate(values["transfer_fee_rate"], "costs.transfer_fee_rate"),
         stamp_duty_rate_before_20230828=_rate(
-            cost_values["stamp_duty_rate_before_20230828"],
+            values["stamp_duty_rate_before_20230828"],
             "costs.stamp_duty_rate_before_20230828",
         ),
         stamp_duty_rate_from_20230828=_rate(
-            cost_values["stamp_duty_rate_from_20230828"],
+            values["stamp_duty_rate_from_20230828"],
             "costs.stamp_duty_rate_from_20230828",
         ),
-    )
-    return MinuteBacktestConfig(
-        path=resolved_path,
-        run_name=run_name,
-        output_root=_resolve_path(resolved_path, raw_values["output_root"]),
-        data=data_config,
-        targets=target_config,
-        account=account_config,
-        execution=execution_config,
-        costs=cost_config,
-        raw=dict(raw_values),
     )
 
 
@@ -248,9 +325,15 @@ def _mapping(value: Any, location: str) -> Mapping[str, Any]:
     return value
 
 
-def _check_keys(values: Mapping[str, Any], expected: set[str], location: str) -> None:
-    missing_keys = expected - set(values)
-    unknown_keys = set(values) - expected
+def _check_keys(
+    values: Mapping[str, Any],
+    required: set[str],
+    location: str,
+    optional: set[str] | None = None,
+) -> None:
+    optional_keys = optional or set()
+    missing_keys = required - set(values)
+    unknown_keys = set(values) - required - optional_keys
     if missing_keys:
         raise ValueError(f"{location} 缺少字段: {sorted(missing_keys)}")
     if unknown_keys:
@@ -279,6 +362,25 @@ def _optional_existing_directory(
     if value is None:
         return None
     return _existing_directory(config_path, value, location)
+
+
+def _required_existing_file(config_path: Path, value: Any, location: str) -> Path:
+    if value is None:
+        raise ValueError(f"{location} 不能为空")
+    path = _resolve_path(config_path, value)
+    if not path.is_file():
+        raise FileNotFoundError(f"{location} 文件不存在: {path}")
+    return path
+
+
+def _optional_existing_file(
+    config_path: Path,
+    value: Any,
+    location: str,
+) -> Path | None:
+    if value is None:
+        return None
+    return _required_existing_file(config_path, value, location)
 
 
 def _nonempty_string(value: Any, location: str) -> str:

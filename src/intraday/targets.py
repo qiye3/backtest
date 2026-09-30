@@ -22,41 +22,64 @@ def load_target_weights(
         target_weights = pd.read_csv(target_path, dtype={"code": "string"})
     else:
         raise ValueError("目标仓位文件只支持 CSV 或 Parquet")
+    return normalize_target_weights(target_weights, date_only_signal_time)
 
+
+def normalize_target_weights(
+    target_weights: pd.DataFrame,
+    date_only_signal_time: str,
+) -> pd.DataFrame:
+    """把外部文件或策略输出统一为完整目标仓位合同。"""
     missing_columns = set(TARGET_COLUMNS) - set(target_weights.columns)
     if missing_columns:
         raise ValueError(f"目标仓位缺少字段: {sorted(missing_columns)}")
-    target_weights = target_weights.loc[:, TARGET_COLUMNS].copy()
-    target_weights["signal_timestamp"] = _signal_timestamps(
-        target_weights["signal_timestamp"],
+    normalized = target_weights.loc[:, TARGET_COLUMNS].copy()
+    normalized["signal_timestamp"] = _signal_timestamps(
+        normalized["signal_timestamp"],
         date_only_signal_time,
     )
-    target_weights["code"] = target_weights["code"].map(normalize_stock_code)
+    normalized["code"] = normalized["code"].map(normalize_stock_code)
     non_stock_codes = sorted(
-        code
-        for code in target_weights["code"].unique()
-        if not is_a_share_stock_code(code)
+        code for code in normalized["code"].unique() if not is_a_share_stock_code(code)
     )
     if non_stock_codes:
-        raise ValueError(f"首版分钟回测只支持 A 股普通股，收到: {non_stock_codes}")
-    target_weights["target_weight"] = pd.to_numeric(
-        target_weights["target_weight"],
+        raise ValueError(f"分钟回测只支持 A 股普通股，收到: {non_stock_codes}")
+    normalized["target_weight"] = pd.to_numeric(
+        normalized["target_weight"],
         errors="raise",
     )
-    if target_weights[TARGET_COLUMNS].isna().any().any():
+    if normalized[TARGET_COLUMNS].isna().any().any():
         raise ValueError("目标仓位包含空值")
-    if target_weights.duplicated(["signal_timestamp", "code"]).any():
+    if normalized.duplicated(["signal_timestamp", "code"]).any():
         raise ValueError("目标仓位的 signal_timestamp 与 code 组合不能重复")
-    if (target_weights["target_weight"] < 0).any():
-        raise ValueError("首版目标权重不能为负")
-    weight_sums = target_weights.groupby("signal_timestamp")["target_weight"].sum()
+    if (normalized["target_weight"] < 0).any():
+        raise ValueError("目标权重不能为负")
+    weight_sums = normalized.groupby("signal_timestamp")["target_weight"].sum()
     if (weight_sums > 1 + 1e-10).any():
         first_invalid = weight_sums[weight_sums > 1 + 1e-10].index[0]
         raise ValueError(f"{first_invalid} 的目标权重和超过 1")
-    return target_weights.sort_values(
+    return normalized.sort_values(
         ["signal_timestamp", "code"],
         kind="stable",
     ).reset_index(drop=True)
+
+
+def load_universe_codes(path: str | Path) -> list[str]:
+    """读取分钟日频策略使用的固定研究股票池。"""
+    universe_path = Path(path)
+    if universe_path.suffix.lower() == ".parquet":
+        universe = pd.read_parquet(universe_path, columns=["code"])
+    elif universe_path.suffix.lower() == ".csv":
+        universe = pd.read_csv(universe_path, usecols=["code"], dtype={"code": "string"})
+    else:
+        raise ValueError("策略股票池只支持 CSV 或 Parquet")
+    codes = sorted({normalize_stock_code(code) for code in universe["code"]})
+    non_stock_codes = [code for code in codes if not is_a_share_stock_code(code)]
+    if non_stock_codes:
+        raise ValueError(f"策略股票池只支持 A 股普通股，收到: {non_stock_codes}")
+    if not codes:
+        raise ValueError("策略股票池不能为空")
+    return codes
 
 
 def normalize_stock_code(value: object) -> str:
@@ -85,7 +108,7 @@ def code_to_archive_parts(code: str) -> tuple[str, str]:
 
 
 def is_a_share_stock_code(code: str) -> bool:
-    """判断代码是否属于当前首版支持的沪深北 A 股普通股。"""
+    """判断代码是否属于当前支持的沪深北 A 股普通股。"""
     digits, exchange = normalize_stock_code(code).split(".")
     if exchange == "SH":
         return digits.startswith(("600", "601", "603", "605", "688", "689"))

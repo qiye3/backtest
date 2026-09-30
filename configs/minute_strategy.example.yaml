@@ -1,0 +1,41 @@
+run_name: minute_daily_strategy_example
+output_root: ../runs
+
+data:
+  minute_root: /home/qiye/zxy/data/stock_minute
+  daily_root: /home/qiye/zxy/data/日K线数据---复权因子-经典技术指标--bs点缠论划线
+  cache_root: /home/qiye/zxy/data/backtest_cache
+  universe_name: strategy_universe
+  start_date: 2025-04-01
+  end_date: 2025-04-30
+  daily_status_path: null
+
+targets:
+  mode: daily_minute_strategy
+  universe_path: ../examples/data/minute_universe.csv
+  implementation:
+    module: examples.intraday.daily_vwap_momentum
+    class: DailyVwapMomentumStrategy
+    params:
+      selected_count: 2
+
+account:
+  initial_capital: 10000000
+  liquidate_at_end: false
+  rights_issue_policy: subscribe_or_fail
+
+execution:
+  slippage_bps: 5
+  max_participation_rate: 0.10
+  lot_size: 100
+  execution_delay_bars: 1
+  time_in_force: day
+  block_one_price_limit: true
+  enforce_t_plus_one: true
+
+costs:
+  commission_rate: 0.0003
+  minimum_commission: 5
+  transfer_fee_rate: 0.00001
+  stamp_duty_rate_before_20230828: 0.001
+  stamp_duty_rate_from_20230828: 0.0005

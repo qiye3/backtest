@@ -10,6 +10,7 @@ group return、simple backtest、account backtest 和 plotter；是否执行每�
 仓位，必需字段为 `signal_timestamp,code,target_weight`。日期型信号会使用 YAML 中的
 `date_only_signal_time`；时间统一按 `Asia/Shanghai` 解析。当前第一阶段只支持多头、
 无杠杆，单个时间点的权重和不能超过 1；未出现在新目标中的已有持仓视为目标为 0。
+长区间运行按交易日流式读取，不需要把整个历史分钟表一次性放入内存。
 
 ```bash
 python -m scripts.run_minute_backtest --config configs/minute.example.yaml
@@ -19,7 +20,8 @@ python -m scripts.run_minute_backtest --config configs/minute.example.yaml
 CSV，并在 `data.cache_root/minute/<universe_name>/` 生成按日 Parquet 缓存。支持
 `sh/600000.csv` 和 `YYYYMMDD/sh/600000.csv` 两种包内路径；240 根 bar 按结束时刻
 重建为 `09:31–11:30`、`13:01–15:00`。日线参考数据既可为散装 XLSX，也可位于 ZIP
-内部，红利、送股和转增字段按每十股口径换算后在开盘前入账。
+内部，红利、送股、转增和配股字段按每十股口径换算后在开盘前入账。缓存绑定源归档
+的大小和修改时间，写入采用原子替换；源归档或解析规则变化时会自动重建。
 
 默认成交模型使用 bar VWAP 加 5 bps 不利滑点，并限制为 bar 成交量的 10%。订单可
 跨 bar 部分成交但日终撤单；同时执行佣金（万三、最低 5 元）、卖出印花税（
@@ -27,8 +29,34 @@ CSV，并在 `data.cache_root/minute/<universe_name>/` 生成按日 Parquet 缓�
 不成交；若行情提供 `limit_up/limit_down` 则按涨跌停方向阻断，当前原始分钟文件没有
 涨跌停字段时对 `high == low` 的一字 bar 采取保守阻断。
 
-每次运行在 `output_root/run_name/` 保存配置快照、运行环境、数据质量问题、指标以及
-orders、fills、positions、nav 四套 Parquet 账本。`run_name` 已存在时会拒绝覆盖。
+每次运行在 `output_root/run_name/` 保存配置快照、运行环境、Git 与依赖信息、数据质量
+问题、指标以及 orders、fills、positions、nav、daily_nav 六套 Parquet 账本。`run_name`
+已存在时会拒绝覆盖；结果先写临时目录，成功后才发布。
+
+### 用分钟数据生成日频信号
+
+把目标配置改为 `targets.mode: daily_minute_strategy`，并提供固定研究股票池和策略类：
+
+```yaml
+targets:
+  mode: daily_minute_strategy
+  universe_path: ../examples/data/minute_universe.csv
+  implementation:
+    module: examples.intraday.daily_vwap_momentum
+    class: DailyVwapMomentumStrategy
+    params:
+      selected_count: 2
+```
+
+策略实现 `on_day_close(trading_date, bars, context)`，返回 `code,target_weight`。D 日
+完整分钟数据只会生成 D 日收盘信号，最早在 D+1 的首个可成交 bar 执行，避免把未来 bar
+带入信号。`--validate-only` 可先检查数据截止日、股票数量和策略入口：
+
+```bash
+python -m scripts.run_minute_backtest \
+  --config configs/minute_strategy.example.yaml \
+  --validate-only
+```
 
 ## 安装
 

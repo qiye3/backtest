@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hundredfold_unit_dates": [
+    "20251201",
+    "20251202",
+    "20251203"
+  ],
+  "evidence": {
+    "hundredfold_unit_dates": "分钟聚合成交量、成交额与同日股票日线逐日交叉核对"
+  }
+}

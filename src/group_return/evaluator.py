@@ -466,7 +466,7 @@ def _prepare_context(
         candidate_end_dates <= np.datetime64(pd.Timestamp(settings["end"]))
     )
     return_end_dates = candidate_end_dates.astype("datetime64[ns]")
-    return_end_dates[~positions_in_calendar] = np.datetime64("NaT")
+    return_end_dates[~positions_in_calendar] = np.datetime64("NaT", "ns")
 
     reference_prices = None
     price_filled = None

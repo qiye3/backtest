@@ -24,6 +24,8 @@ class Order:
     filled_notional: float = 0.0
     commission_charged: float = 0.0
     reject_reason: str | None = None
+    blocked_bars: int = 0
+    last_block_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -65,8 +67,9 @@ class Position:
         if shares > self.sellable_shares(trading_date, enforce_t_plus_one):
             raise ValueError("卖出数量超过可卖持仓")
         remaining = shares
+        normalized_date = pd.Timestamp(trading_date).normalize().tz_localize(None)
         for bought in sorted(self.lots_by_date):
-            if enforce_t_plus_one and bought >= pd.Timestamp(trading_date).normalize().tz_localize(None):
+            if enforce_t_plus_one and bought >= normalized_date:
                 continue
             consumed = min(remaining, self.lots_by_date[bought])
             self.lots_by_date[bought] -= consumed
@@ -77,6 +80,12 @@ class Position:
             bought: quantity for bought, quantity in self.lots_by_date.items() if quantity > 0
         }
         self.shares -= shares
+
+    def add_action_shares(self, trading_date: pd.Timestamp, shares: int) -> None:
+        """登记送转或配股新增股份；新增股份从事件日开始重新遵守 T+1。"""
+        if shares <= 0:
+            return
+        self.buy(trading_date, shares)
 
 
 class ExecutionModel:
@@ -93,10 +102,13 @@ class ExecutionModel:
         cash: float,
         sellable_shares: int,
     ) -> Fill | None:
-        """撮合单根 bar；无流动性、受限或不足一手时保留订单等待。"""
+        """撮合单根 bar；受限或不足一手时保留订单等待。"""
         if order.status not in {"open", "partially_filled"} or order.remaining_shares <= 0:
             return None
-        if float(bar["volume"]) <= 0 or self._is_blocked_one_price_bar(order, bar):
+        blocked_reason = self._blocked_reason(order, bar)
+        if blocked_reason is not None:
+            order.blocked_bars += 1
+            order.last_block_reason = blocked_reason
             return None
 
         capacity = int(float(bar["volume"]) * self.execution.max_participation_rate)
@@ -107,18 +119,36 @@ class ExecutionModel:
         shares = min(order.remaining_shares, available)
         shares = _round_down(shares, self.execution.lot_size)
         if shares <= 0:
+            order.blocked_bars += 1
+            order.last_block_reason = "insufficient_capacity_or_sellable_shares"
             return None
 
-        price = self._execution_price(order.side, float(bar["vwap"]))
+        price = self._execution_price(order.side, bar)
         if order.side == "buy":
             shares = self._affordable_shares(order, shares, price, cash, bar["timestamp"])
         if shares <= 0:
+            order.blocked_bars += 1
+            order.last_block_reason = "insufficient_cash"
             return None
         return self._build_fill(order, bar["timestamp"], shares, price)
 
-    def _execution_price(self, side: str, vwap: float) -> float:
+    def _blocked_reason(self, order: Order, bar: pd.Series) -> str | None:
+        if "is_suspended" in bar and pd.notna(bar["is_suspended"]):
+            if bool(bar["is_suspended"]):
+                return "suspended"
+        if float(bar["volume"]) <= 0:
+            return "zero_volume"
+        if self._is_blocked_one_price_bar(order, bar):
+            return "one_price_limit"
+        return None
+
+    def _execution_price(self, side: str, bar: pd.Series) -> float:
         direction = 1 if side == "buy" else -1
-        return vwap * (1 + direction * self.execution.slippage_bps / 10_000)
+        impacted_price = float(bar["vwap"]) * (
+            1 + direction * self.execution.slippage_bps / 10_000
+        )
+        # 任何真实成交都应落在该分钟已经出现过的价格区间内。
+        return min(max(impacted_price, float(bar["low"])), float(bar["high"]))
 
     def _affordable_shares(
         self,
@@ -148,6 +178,7 @@ class ExecutionModel:
         order.filled_shares += shares
         order.filled_notional += fill.notional
         order.commission_charged += fill.commission
+        order.last_block_reason = None
         if order.remaining_shares == 0:
             order.status = "filled"
         else:
@@ -199,13 +230,16 @@ class ExecutionModel:
         is_one_price = float(bar["high"]) == float(bar["low"])
         if not is_one_price:
             return False
-        if "limit_up" in bar and pd.notna(bar["limit_up"]):
-            if order.side == "buy" and float(bar["close"]) >= float(bar["limit_up"]):
-                return True
-        if "limit_down" in bar and pd.notna(bar["limit_down"]):
-            if order.side == "sell" and float(bar["close"]) <= float(bar["limit_down"]):
-                return True
-        return "limit_up" not in bar and "limit_down" not in bar
+        has_limit_up = "limit_up" in bar and pd.notna(bar["limit_up"])
+        has_limit_down = "limit_down" in bar and pd.notna(bar["limit_down"])
+        if has_limit_up or has_limit_down:
+            if order.side == "buy" and has_limit_up:
+                return float(bar["close"]) >= float(bar["limit_up"])
+            if order.side == "sell" and has_limit_down:
+                return float(bar["close"]) <= float(bar["limit_down"])
+            return False
+        # 没有精确涨跌停参考数据时保持保守，不猜测一字价格的方向。
+        return True
 
 
 def _round_down(shares: int, lot_size: int) -> int:

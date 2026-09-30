@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "factor-backtest"
-version = "0.1.0"
+version = "0.2.0"
 description = "Config-driven factor evaluation and backtesting"
 requires-python = ">=3.9"
 dependencies = [
@@ -26,6 +26,7 @@ dev = ["pytest>=8.0", "ruff>=0.8"]
 include = ["examples*", "factors*", "src*", "strategies*"]
 
 [tool.setuptools.package-data]
+"src.intraday" = ["data_corrections.json"]
 "factors.growth_factors" = ["config/*.yaml", "*.yaml"]
 "factors.quality_factors" = ["config/*.yaml", "*.yaml"]
 "factors.value_factors" = ["config/*.yaml", "*.yaml"]
