@@ -129,11 +129,7 @@ def _single_factor_run_config(
         {
             "factors": True,
             "group_return": True,
-            "simple_backtest": False,
-            "account_backtest": False,
             "strategies": False,
-            "strategy_simple_backtest": False,
-            "strategy_account_backtest": False,
             "plotter": False,
             "overall_evaluation": True,
             "refresh_market_data": False,

@@ -6,6 +6,7 @@ import zipfile
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from src.intraday.config import (
     AccountConfig,
@@ -42,14 +43,10 @@ def _config(tmp_path: Path, *, initial_capital: float = 100_000.0) -> MinuteBack
         ),
         account=AccountConfig(
             initial_capital=initial_capital,
-            liquidate_at_end=False,
-        ),
+            ),
         execution=ExecutionConfig(
             slippage_bps=10,
             max_participation_rate=1.0,
-            lot_size=100,
-            execution_delay_bars=1,
-            time_in_force="day",
             block_one_price_limit=False,
             enforce_t_plus_one=True,
         ),
@@ -88,39 +85,37 @@ def _targets(rows: list[tuple[str, str, float]]) -> pd.DataFrame:
     return normalize_target_weights(frame, "09:30:00")
 
 
-def test_first_bar_cost_is_included_in_total_return(tmp_path: Path) -> None:
+def test_first_filled_bar_cost_is_included_in_total_return(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    market = _bars(
-        [
-            ("2025-01-02 09:31", "600000.SH", 10.0),
-            ("2025-01-02 09:32", "600000.SH", 10.0),
-        ]
-    )
-    targets = _targets([("2025-01-02 09:30", "600000.SH", 0.5)])
-
+    market = _bars([
+        ("2025-01-02 15:00", "600000.SH", 10.0),
+        ("2025-01-03 09:59", "600000.SH", 10.0),
+        ("2025-01-03 10:00", "600000.SH", 10.0),
+        ("2025-01-03 10:01", "600000.SH", 10.0),
+    ])
+    targets = _targets([("2025-01-02 15:00", "600000.SH", 0.5)])
     result = MinuteBacktestEngine(config).run(market, targets)
-
     assert result.metrics["initial_nav"] == config.account.initial_capital
     assert result.metrics["total_return"] < 0
     assert result.metrics["transaction_cost"] > 0
 
 
-def test_target_missing_at_activation_retries_when_bar_appears(tmp_path: Path) -> None:
+def test_missing_reference_price_is_deferred_until_next_day(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    market = _bars(
-        [
-            ("2025-01-02 09:31", "000001.SZ", 10.0),
-            ("2025-01-02 09:32", "600000.SH", 10.0),
-        ]
-    )
-    targets = _targets([("2025-01-02 09:30", "600000.SH", 0.5)])
-
+    market = _bars([
+        ("2025-01-02 15:00", "000001.SZ", 10.0),
+        ("2025-01-03 09:59", "000001.SZ", 10.0),
+        ("2025-01-03 10:00", "000001.SZ", 10.0),
+        ("2025-01-03 10:01", "600000.SH", 10.0),
+        ("2025-01-06 09:59", "600000.SH", 10.0),
+        ("2025-01-06 10:00", "600000.SH", 10.0),
+        ("2025-01-06 10:01", "600000.SH", 10.0),
+    ])
+    targets = _targets([("2025-01-02 15:00", "600000.SH", 0.5)])
     result = MinuteBacktestEngine(config).run(market, targets)
-
     assert len(result.fills) == 1
     assert result.fills.iloc[0]["timestamp"] == pd.Timestamp(
-        "2025-01-02 09:32",
-        tz="Asia/Shanghai",
+        "2025-01-06 10:01", tz="Asia/Shanghai",
     )
 
 
@@ -148,7 +143,7 @@ def test_streaming_and_batch_results_match(tmp_path: Path) -> None:
     assert batch.metrics == streamed.metrics
 
 
-def test_execution_price_is_bounded_by_bar_range(tmp_path: Path) -> None:
+def test_execution_slippage_is_preserved_outside_historical_bar_range(tmp_path: Path) -> None:
     config = _config(tmp_path)
     execution = ExecutionModel(config.execution, config.costs)
     order = Order(
@@ -173,36 +168,28 @@ def test_execution_price_is_bounded_by_bar_range(tmp_path: Path) -> None:
     fill = execution.match(order, bar, cash=10_000, sellable_shares=0)
 
     assert fill is not None
-    assert fill.price == 10.005
+    assert fill.price == pytest.approx(10.01)
 
 
 def test_rights_issue_subscribes_and_deducts_cash(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    market = _bars(
-        [
-            ("2025-01-02 09:31", "600000.SH", 10.0),
-            ("2025-01-02 09:32", "600000.SH", 10.0),
-            ("2025-01-03 09:31", "600000.SH", 8.0),
-        ]
-    )
-    targets = _targets([("2025-01-02 09:30", "600000.SH", 0.5)])
-    actions = pd.DataFrame(
-        {
-            "date": [pd.Timestamp("2025-01-03")],
-            "code": ["600000.SH"],
-            "cash_dividend_per_share": [0.0],
-            "share_ratio": [0.0],
-            "rights_ratio": [0.2],
-            "rights_price": [5.0],
-        }
-    )
-
-    result = MinuteBacktestEngine(config).run_stream(
-        [market[market["timestamp"].dt.day == 2], market[market["timestamp"].dt.day == 3]],
-        targets,
-        actions,
-    )
-
+    market = _bars([
+        ("2025-01-02 15:00", "600000.SH", 10.0),
+        ("2025-01-03 09:59", "600000.SH", 10.0),
+        ("2025-01-03 10:00", "600000.SH", 10.0),
+        ("2025-01-03 10:01", "600000.SH", 10.0),
+        ("2025-01-06 09:31", "600000.SH", 8.0),
+    ])
+    targets = _targets([("2025-01-02 15:00", "600000.SH", 0.5)])
+    actions = pd.DataFrame({
+        "date": [pd.Timestamp("2025-01-06")],
+        "code": ["600000.SH"],
+        "cash_dividend_per_share": [0.0],
+        "share_ratio": [0.0],
+        "rights_ratio": [0.2],
+        "rights_price": [5.0],
+    })
+    result = MinuteBacktestEngine(config).run(market, targets, actions)
     first_fill_shares = int(result.fills.iloc[0]["shares"])
     final_position = int(result.positions.iloc[-1]["shares"])
     assert final_position == first_fill_shares + int(first_fill_shares * 0.2)
@@ -268,54 +255,16 @@ def test_cache_rebuilds_when_source_archive_changes(tmp_path: Path) -> None:
     assert metadata["source"]["mtime_ns"] == archive_path.stat().st_mtime_ns
 
 
-def test_legacy_file_target_config_remains_compatible(tmp_path: Path) -> None:
-    minute_root = tmp_path / "minute"
-    minute_root.mkdir()
-    targets_path = tmp_path / "targets.csv"
-    targets_path.write_text(
-        "signal_timestamp,code,target_weight\n2025-01-02,600000.SH,0.5\n",
-        encoding="utf-8",
-    )
-    config_path = tmp_path / "minute.yaml"
-    config_path.write_text(
-        f"""
-run_name: compatibility
-output_root: runs
-data:
-  minute_root: {minute_root}
-  daily_root: null
-  cache_root: cache
-  universe_name: compatibility
-  start_date: 2025-01-02
-  end_date: 2025-01-03
-targets:
-  path: {targets_path}
-  date_only_signal_time: "14:55:00"
-account:
-  initial_capital: 100000
-  liquidate_at_end: false
-execution:
-  slippage_bps: 5
-  max_participation_rate: 0.1
-  lot_size: 100
-  execution_delay_bars: 1
-  time_in_force: day
-  block_one_price_limit: true
-  enforce_t_plus_one: true
-costs:
-  commission_rate: 0.0003
-  minimum_commission: 5
-  transfer_fee_rate: 0.00001
-  stamp_duty_rate_before_20230828: 0.001
-  stamp_duty_rate_from_20230828: 0.0005
-""".strip(),
-        encoding="utf-8",
-    )
-
-    config = load_minute_config(config_path)
-
-    assert config.targets.mode == "file"
-    assert config.account.rights_issue_policy == "subscribe_or_fail"
+def test_retired_execution_config_is_rejected(tmp_path: Path) -> None:
+    from src.intraday.config import _load_execution_config
+    with pytest.raises(ValueError, match="未知字段"):
+        _load_execution_config({
+            "slippage_bps": 5,
+            "max_participation_rate": 0.1,
+            "lot_size": 100,
+            "block_one_price_limit": True,
+            "enforce_t_plus_one": True,
+        })
 
 
 def test_daily_trade_status_normalizes_boolean_fields(tmp_path: Path) -> None:

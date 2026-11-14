@@ -38,8 +38,6 @@ class ValueFactorTests(unittest.TestCase):
         config["run"].update(
             {
                 "group_return": False,
-                "simple_backtest": False,
-                "account_backtest": False,
                 "plotter": False,
                 "overall_evaluation": False,
                 "max_workers": 2,
@@ -95,8 +93,6 @@ class ValueFactorTests(unittest.TestCase):
         enabled_stages = ("factors", "group_return", "overall_evaluation")
         self.assertTrue(all(template["run"][stage_name] for stage_name in enabled_stages))
         self.assertFalse(template["run"]["plotter"])
-        self.assertFalse(template["run"]["simple_backtest"])
-        self.assertFalse(template["run"]["account_backtest"])
 
     def test_ep_is_inverse_of_positive_ttm_pe(self) -> None:
         """EP 应严格等于 TTM PE 的安全倒数。"""

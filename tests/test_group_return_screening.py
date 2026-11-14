@@ -6,7 +6,6 @@ import unittest
 
 import pandas as pd
 
-from src.backtest.io import build_metrics_summary
 from src.group_return.screening import (
     build_factor_screening_summary,
     build_frequency_summaries,
@@ -106,7 +105,7 @@ class FactorScreeningSummaryTests(unittest.TestCase):
         self.assertEqual(summary["min_stock_count"], 80)
 
     def test_frequency_summary_has_one_row_per_factor(self) -> None:
-        """不同周期应横向展开，simple 汇总只写入 G10 且没有 mode。"""
+        """不同周期的因子评价应横向展开，不携带已退役回测字段。"""
         screening_summary = pd.DataFrame(
             {
                 "factor_name": ["factor_a", "factor_a"],
@@ -153,37 +152,14 @@ class FactorScreeningSummaryTests(unittest.TestCase):
                 },
             }
         )
-        metrics = pd.DataFrame(
-            {
-                "group_id": ["G1", "G10"],
-                "quantile_lower": [0.0, 0.9],
-                "quantile_upper": [0.1, 1.0],
-                "rebalance_frequency": ["weekly", "weekly"],
-                "rebalance_interval": [1, 1],
-                "mode": ["simple", "simple"],
-                "total_return": [0.1, 0.2],
-                "annual_return": [0.2, 0.3],
-                "sharpe": [1.0, 2.0],
-                "mean_turnover": [0.3, 0.4],
-                "annual_turnover": [3.0, 4.0],
-                "benchmark_total_return": [0.05, 0.05],
-                "excess_total_return": [0.05, 0.15],
-            }
-        )
-
-        backtest_summary = build_metrics_summary(
-            {"factor_a": {"metrics": metrics}}
-        )
         weekly_summary = build_frequency_summaries(
             screening_summary,
-            backtest_summary,
+            None,
         )["weekly"]
 
         self.assertEqual(len(weekly_summary), 1)
         self.assertEqual(weekly_summary.at[0, "rank_ic_mean_1w"], 1.0)
         self.assertEqual(weekly_summary.at[0, "rank_ic_mean_2w"], 2.0)
-        self.assertEqual(weekly_summary.at[0, "total_return_1w"], 0.2)
-        self.assertEqual(weekly_summary.at[0, "mean_turnover_1w"], 0.4)
         self.assertNotIn("mode", weekly_summary.columns)
 
 

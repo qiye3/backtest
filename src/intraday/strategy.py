@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -52,6 +52,7 @@ def generate_daily_strategy_targets(
     strategy: DailyMinuteStrategy,
     daily_bars: Iterable[pd.DataFrame],
     universe_codes: Sequence[str],
+    universe_for_date: Callable[[pd.Timestamp], Sequence[str]] | None = None,
 ) -> pd.DataFrame:
     """逐日调用策略；D 日完整分钟数据产生的信号最早在 D+1 成交。"""
     normalized_universe = tuple(sorted({normalize_stock_code(code) for code in universe_codes}))
@@ -68,13 +69,18 @@ def generate_daily_strategy_targets(
         if len(trading_dates) != 1:
             raise ValueError("分钟日频策略每次只能接收一个交易日")
         trading_date = pd.Timestamp(trading_dates[0])
+        active_codes = (
+            tuple(sorted({normalize_stock_code(code) for code in universe_for_date(trading_date)}))
+            if universe_for_date is not None else normalized_universe
+        )
         context = DailyMinuteContext(
             completed_dates=tuple(completed_dates),
-            universe_codes=normalized_universe,
+            universe_codes=active_codes,
         )
-        daily_target = strategy.on_day_close(trading_date, bars.copy(), context)
+        active_bars = bars[bars["code"].isin(active_codes)].copy()
+        daily_target = strategy.on_day_close(trading_date, active_bars, context)
         target_frames.append(
-            _stamp_daily_target(daily_target, timestamps.max(), normalized_universe)
+            _stamp_daily_target(daily_target, timestamps.max(), active_codes)
         )
         completed_dates.append(trading_date)
 

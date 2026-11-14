@@ -59,8 +59,6 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 config["factors"]["selected_variants"],
                 ["raw"],
             )
-            self.assertFalse(run_settings["simple_backtest"])
-            self.assertFalse(run_settings["account_backtest"])
             self.assertFalse(run_settings["plotter"])
             self.assertTrue(
                 config["plots"]["overall"]["factor_distribution_grid"][
@@ -93,8 +91,6 @@ class ReleaseWorkflowTests(unittest.TestCase):
         }
         self.assertEqual(tuple(configs), tuple(experiment_variants))
         for experiment_name, config in configs.items():
-            self.assertFalse(config["run"]["simple_backtest"])
-            self.assertFalse(config["run"]["account_backtest"])
             self.assertFalse(config["run"]["plotter"])
             self.assertTrue(config["run"]["overall_evaluation"])
             self.assertEqual(
@@ -107,7 +103,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
             )
 
     def test_strategy_runner_keeps_only_strategy_figures_enabled(self) -> None:
-        """指数增强配置应运行 simple 回测且不绘制内部因子图。"""
+        """指数增强配置只生成策略权重与对应分析图。"""
         with TemporaryDirectory() as temporary_directory:
             workspace = Path(temporary_directory)
             arguments = SimpleNamespace(
@@ -120,16 +116,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
                     PROJECT_ROOT,
                     arguments,
                 )
-                self.assertTrue(config["run"]["strategy_simple_backtest"])
-                self.assertFalse(config["run"]["strategy_account_backtest"])
                 self.assertTrue(config["run"]["plotter"])
                 self.assertTrue(config["plots"]["strategy"]["enabled"])
-                for plot_name in (
-                    "distribution",
-                    "evaluation",
-                    "simple",
-                    "account",
-                ):
+                for plot_name in ("distribution", "evaluation"):
                     self.assertFalse(config["plots"][plot_name]["enabled"])
 
     def test_default_strategy_run_uses_combined_suite(self) -> None:

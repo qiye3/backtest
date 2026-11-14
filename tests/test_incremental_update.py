@@ -128,8 +128,6 @@ class IncrementalUpdateTests(unittest.TestCase):
             {
                 "factors": True,
                 "group_return": False,
-                "simple_backtest": False,
-                "account_backtest": False,
                 "plotter": False,
                 "overall_evaluation": False,
                 "max_workers": 1,

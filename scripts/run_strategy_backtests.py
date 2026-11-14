@@ -85,19 +85,14 @@ def _build_config(
     config["output"]["root"] = str(arguments.output_root / suite)
     config["run"].update(
         {
-            "simple_backtest": False,
-            "account_backtest": False,
-            "strategy_simple_backtest": True,
-            "strategy_account_backtest": False,
+            "strategies": True,
             "plotter": True,
             "overall_evaluation": False,
         }
     )
     config["plots"]["distribution"]["enabled"] = False
     config["plots"]["evaluation"]["enabled"] = False
-    config["plots"]["simple"]["enabled"] = False
-    config["plots"]["account"]["enabled"] = False
-    config["plots"]["strategy"]["enabled"] = True
+    config["plots"].setdefault("strategy", {})["enabled"] = True
     return strategy_root, config
 
 
@@ -122,7 +117,7 @@ def main() -> None:
     """生成套件配置并默认在一个 tmux session 中顺序执行。"""
     arguments = _arguments()
     if not arguments.dry_run and not arguments.foreground:
-        launch_in_tmux(arguments.output_root, "strategy_backtest")
+        launch_in_tmux(arguments.output_root, "strategy_targets")
         return
 
     package_root = Path(__file__).resolve().parents[1]

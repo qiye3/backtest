@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.8"]
+free-minute = ["akshare>=1.16", "curl_cffi>=0.17", "xlrd>=2.0"]
 
 [tool.setuptools.packages.find]
 include = ["examples*", "factors*", "src*", "strategies*"]

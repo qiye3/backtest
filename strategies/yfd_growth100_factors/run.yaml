@@ -3,11 +3,7 @@
 run:
   factors: true
   group_return: false
-  simple_backtest: false
-  account_backtest: false
   strategies: true
-  strategy_simple_backtest: true
-  strategy_account_backtest: false
   plotter: true
   overall_evaluation: false
   max_workers: 4
@@ -33,12 +29,7 @@ output:
   save_parquet:
     factor: true
     group_return: false
-    simple_backtest: false
-    account_backtest: false
     strategy_weights: true
-    strategy_simple_backtest: false
-    strategy_account_backtest: false
-  save_backtest_details: false
 
 market_data:
   source_root: /path/to/server/data
@@ -93,78 +84,9 @@ market_data:
         - con_npgrate_13w
         - con_npcgrate_2y
         - con_roe
-simple_backtest:
-  start: "2024-02-01"
-  end: "2026-09-09"
-  universe_indices:
-    - 000906.SH
-    - 000852.SH
-  rebalance:
-    frequency: quarterly
-    intervals: [1]
-    months: [2, 5, 8, 11]
-    trading_day: 6
-  trade_price: close
-  benchmark:
-    source: index_price
-  initial_entry: first_rebalance
-  initial_capital: 1.0
-  transaction_cost_rate: 0.001
-  charge_initial_cost: true
-  liquidate_at_end: false
-  empty_group_policy: cash
-  insufficient_stocks_policy: error
-  missing_price_policy: previous_close
-  max_stale_days: null
-  curve_frequency: both
-  execution:
-    policy: ideal
-
-account_backtest:
-  start: "2024-02-01"
-  end: "2026-09-09"
-  universe_indices:
-    - 000906.SH
-    - 000852.SH
-  rebalance:
-    frequency: quarterly
-    intervals: [1]
-    months: [2, 5, 8, 11]
-    trading_day: 6
-  trade_price: close
-  benchmark:
-    source: index_price
-  initial_entry: first_rebalance
-  initial_capital: 1000000
-  transaction_cost_rate: 0.001
-  charge_initial_cost: true
-  liquidate_at_end: false
-  empty_group_policy: cash
-  insufficient_stocks_policy: error
-  missing_price_policy: previous_close
-  max_stale_days: null
-  curve_frequency: both
-  execution:
-    policy: ideal
-
-metrics:
-  risk_free_rate: 0.0
-  return_frequency: daily
-  annual_trading_days: 252
-  annual_weeks: 52
-  include_initial_turnover: true
-  simple_annual_return: linear
-  account_annual_return: compound
-
 plots:
   # 仅输出指数增强策略回测图，不输出内部因子研究图。
   distribution:
     enabled: false
   evaluation:
     enabled: false
-  simple:
-    enabled: false
-  account:
-    enabled: false
-  strategy:
-    enabled: true

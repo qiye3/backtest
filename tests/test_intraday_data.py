@@ -121,6 +121,32 @@ def test_reader_records_duplicate_member_and_uses_first_file(tmp_path) -> None:
     assert reader.issues[0].reason == "归档内存在重复代码成员，已使用首份文件"
 
 
+def test_reader_loads_standard_daily_parquet(tmp_path) -> None:
+    bars = pd.DataFrame(
+        {
+            "timestamp": minute_bar_end_times("2025-04-01"),
+            "code": ["600000.SH"] * 240,
+            "open": [10.0] * 240,
+            "high": [10.1] * 240,
+            "low": [9.9] * 240,
+            "close": [10.0] * 240,
+            "amount": [10_000.0] * 240,
+            "volume": [1_000.0] * 240,
+            "vwap": [10.0] * 240,
+        }
+    )
+    minute_root = tmp_path / "minute_bars/2025"
+    minute_root.mkdir(parents=True)
+    bars.to_parquet(minute_root / "2025-04-01.parquet", index=False)
+    reader = MinuteArchiveReader(tmp_path / "minute_bars", tmp_path / "cache", "parquet")
+
+    result = reader.read_day("2025-04-01", ["600000.SH"])
+
+    assert len(result) == 240
+    assert result["timestamp"].dt.tz is not None
+    assert result["close"].iloc[-1] == 10.0
+
+
 def test_corporate_actions_read_selected_xlsx_inside_zip(tmp_path) -> None:
     pytest.importorskip("openpyxl")
     excel_buffer = io.BytesIO()
@@ -138,6 +164,29 @@ def test_corporate_actions_read_selected_xlsx_inside_zip(tmp_path) -> None:
     ).to_excel(excel_buffer, index=False)
     with zipfile.ZipFile(tmp_path / "daily.zip", "w") as archive:
         archive.writestr("daily/600000.xlsx", excel_buffer.getvalue())
+
+    result = load_corporate_actions(tmp_path, ["600000.SH"])
+
+    assert result.loc[0, "cash_dividend_per_share"] == 0.2
+    assert result.loc[0, "share_ratio"] == 0.3
+
+
+def test_corporate_actions_read_standard_symbol_parquet(tmp_path) -> None:
+    pd.DataFrame(
+        {
+            "date": ["2025-06-01"],
+            "code": ["600000.SH"],
+            "close": [10.0],
+            "复权因子": [1.3],
+            "扣减值": [0.2],
+            "后复权价": [13.2],
+            "红利": [2.0],
+            "送股数": [1.0],
+            "转增股": [2.0],
+            "配股数": [0.0],
+            "配股价": [0.0],
+        }
+    ).to_parquet(tmp_path / "600000.SH.parquet", index=False)
 
     result = load_corporate_actions(tmp_path, ["600000.SH"])
 

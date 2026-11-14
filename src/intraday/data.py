@@ -1,4 +1,4 @@
-"""按需读取分钟归档，并构造回测使用的标准行情表。"""
+"""按需读取分钟归档或标准 Parquet，并构造回测使用的行情表。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import os
 import re
 import tempfile
 import zipfile
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -55,7 +55,7 @@ class DataQualityIssue:
 
 
 class MinuteArchiveReader:
-    """从每日压缩包读取指定股票，并按股票池按日缓存 Parquet。"""
+    """从每日压缩包或 Parquet 读取指定股票，并按股票池缓存。"""
 
     def __init__(self, minute_root: Path, cache_root: Path, universe_name: str) -> None:
         self.minute_root = Path(minute_root)
@@ -127,12 +127,13 @@ class MinuteArchiveReader:
         self,
         start_date: object,
         end_date: object,
-        codes: Iterable[str],
+        codes: Iterable[str] | Callable[[pd.Timestamp], Iterable[str]],
     ) -> Iterator[pd.DataFrame]:
-        """逐日产生行情，使多年回测的内存只受单日规模影响。"""
-        normalized_codes = sorted({normalize_stock_code(code) for code in codes})
+        """逐日读取。codes 可以是按日期返回历史成份和在途持仓的函数。"""
+        static_codes = None if callable(codes) else sorted({normalize_stock_code(code) for code in codes})
         for trading_date in self.dates_in_range(start_date, end_date):
-            bars = self.read_day(trading_date, normalized_codes)
+            daily_codes = codes(trading_date) if callable(codes) else static_codes
+            bars = self.read_day(trading_date, daily_codes)
             if not bars.empty:
                 yield bars
 
@@ -167,7 +168,8 @@ class MinuteArchiveReader:
     def _index_archives(self) -> dict[str, Path]:
         archives: dict[str, Path] = {}
         for path in sorted(self.minute_root.rglob("*")):
-            if not path.is_file() or path.suffix.lower() not in {".zip", ".7z"}:
+            supported_suffixes = {".zip", ".7z", ".parquet"}
+            if not path.is_file() or path.suffix.lower() not in supported_suffixes:
                 continue
             trading_date = _date_from_archive_name(path)
             if trading_date is None:
@@ -175,7 +177,7 @@ class MinuteArchiveReader:
             previous_path = archives.get(trading_date)
             if previous_path is not None:
                 raise ValueError(
-                    f"分钟归档日期重复: {trading_date}: {previous_path} 与 {path}"
+                    f"分钟数据日期重复: {trading_date}: {previous_path} 与 {path}"
                 )
             archives[trading_date] = path
         return archives
@@ -212,6 +214,8 @@ class MinuteArchiveReader:
         trading_date: pd.Timestamp,
         codes: list[str],
     ) -> list[pd.DataFrame]:
+        if archive_path.suffix.lower() == ".parquet":
+            return self._read_parquet(archive_path, trading_date, codes)
         if archive_path.suffix.lower() == ".zip":
             with zipfile.ZipFile(archive_path) as archive:
                 members, duplicate_codes = _member_lookup(archive.namelist())
@@ -226,6 +230,43 @@ class MinuteArchiveReader:
                         frames.append(frame)
                 return frames
         return self._read_7z(archive_path, trading_date, codes)
+
+    # 从标准 Parquet 过滤请求股票，并保留与压缩包读取一致的问题记录。
+    def _read_parquet(
+        self,
+        parquet_path: Path,
+        trading_date: pd.Timestamp,
+        codes: list[str],
+    ) -> list[pd.DataFrame]:
+        """读取标准分钟 Parquet，并记录请求股票的缺失情况。
+
+        输入：
+        - ``parquet_path``：单个交易日的全市场分钟 Parquet。
+        - ``trading_date``：该文件对应的交易日。
+        - ``codes``：本次回测需要的标准股票代码。
+
+        输出：
+        - 有记录时返回单元素 DataFrame 列表；全为空时返回空列表。
+
+        功能和用途：
+        - 使用 Parquet 过滤下推只读取股票池，并统一时间戳时区。
+        - 缺失股票沿用压缩包读取器的问题记录格式。
+        """
+        columns = ["timestamp", "code", *MINUTE_COLUMNS, "vwap"]
+        frame = pd.read_parquet(
+            parquet_path,
+            columns=columns,
+            filters=[("code", "in", codes)],
+        )
+        present_codes = set(frame["code"].astype(str))
+        for code in sorted(set(codes) - present_codes):
+            self._missing_member(trading_date, code)
+        if frame.empty:
+            return []
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="raise")
+        if frame["timestamp"].dt.tz is None:
+            frame["timestamp"] = frame["timestamp"].dt.tz_localize(TIMEZONE)
+        return [frame]
 
     def _read_7z(
         self,
@@ -492,9 +533,15 @@ def _empty_minute_frame() -> pd.DataFrame:
 
 
 def load_corporate_actions(daily_root: Path, codes: Iterable[str]) -> pd.DataFrame:
-    """从散装或 ZIP 内 XLSX 提取除权事件和配股条款。"""
+    """从标准 Parquet、散装 XLSX 或 ZIP 提取除权事件和配股条款。"""
     wanted = {normalize_stock_code(code) for code in codes}
     records: list[pd.DataFrame] = []
+    for path in sorted(Path(daily_root).rglob("*.parquet")):
+        inferred = _code_from_filename(path)
+        if inferred is None or inferred not in wanted:
+            continue
+        raw = pd.read_parquet(path)
+        records.append(_corporate_actions_from_frame(raw, inferred))
     for path in sorted(Path(daily_root).rglob("*.xlsx")):
         inferred = _code_from_filename(path)
         if inferred is None or inferred not in wanted:
@@ -527,6 +574,23 @@ def load_corporate_actions(daily_root: Path, codes: Iterable[str]) -> pd.DataFra
 
 def _corporate_actions_from_excel(source: object, code: str) -> pd.DataFrame:
     raw = pd.read_excel(source)
+    return _corporate_actions_from_frame(raw, code)
+
+
+# 从单只股票的标准日线表构造公司行动记录。
+def _corporate_actions_from_frame(raw: pd.DataFrame, code: str) -> pd.DataFrame:
+    """提取单只股票的公司行动记录。
+
+    输入：
+    - ``raw``：包含日期和可选红利、送转、配股字段的日线表。
+    - ``code``：带市场后缀的标准股票代码。
+
+    输出：
+    - 返回只包含实际公司行动日期和每股口径字段的 DataFrame。
+
+    功能和用途：
+    - 让 Parquet 与 Excel 日线共用同一复权校验和事件换算规则。
+    """
     _validate_adjusted_prices(raw, code)
     date_column = next((name for name in ("日期", "交易日期", "date") if name in raw), None)
     if date_column is None:
@@ -579,6 +643,10 @@ def _xlsx_member_lookup(member_names: Iterable[str]) -> dict[str, str]:
 
 
 def _code_from_filename(path: Path) -> str | None:
+    try:
+        return normalize_stock_code(path.stem)
+    except ValueError:
+        pass
     for token in path.stem.replace("-", "_").split("_"):
         if len(token) == 6 and token.isdigit():
             try:

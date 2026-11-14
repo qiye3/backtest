@@ -1,0 +1,46 @@
+# 可选因子分层：此模式单独建立G01...G10账户，不影响普通策略回测。
+# factor.panel可以是框架产生的日期×股票宽表 Parquet，或date/code/factor_value长表。
+run_name: csi1000_factor_layers_v3
+output_root: /home/qiye/zxy/backtest_runs
+
+universe:
+  index_code: 000852.SH
+  members_root: /REPLACE/WITH/REAL/INDEX/MEMBERS
+
+data:
+  minute_root: /home/qiye/zxy/data/minute_bars
+  daily_root: /home/qiye/zxy/data/daily_bars
+  cache_root: /home/qiye/zxy/cache/backtest
+  universe_name: csi1000_factor_layers
+  start_date: 2025-04-01
+  end_date: 2025-12-31
+  daily_status_path: /REPLACE/WITH/DAILY_LIMITS.csv
+
+targets:
+  mode: factor_layers
+  path: /REPLACE/WITH/FACTOR/factor.parquet
+  factor_column: factor_value
+  layer_count: 10
+  descending: false  # false = G01为因子最低组；true = G01为因子最高组
+  date_only_signal_time: "15:00:00"
+
+account:
+  initial_capital: 10000000
+  rights_issue_policy: subscribe_or_fail
+
+execution:
+  order_time: "13:20:00"
+  window_bars: 5
+  retry_unfilled_days: 5
+  slippage_bps: 5
+  max_participation_rate: 0.05
+  block_one_price_limit: true
+  enforce_t_plus_one: true
+  require_daily_limit_data: true
+
+costs:
+  commission_rate: 0.0003
+  minimum_commission: 5
+  transfer_fee_rate: 0.00001
+  stamp_duty_rate_before_20230828: 0.001
+  stamp_duty_rate_from_20230828: 0.0005

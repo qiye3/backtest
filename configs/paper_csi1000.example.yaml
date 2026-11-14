@@ -1,0 +1,50 @@
+# 中证1000 正式事后模拟账户示例。先把路径替换为你 WSL 的真实目录。
+# 每天收盘后：读取中证1000历史成份；只更新实际持仓、待补单和当前目标涉及的分钟行情，续跑一天。
+run_name: csi1000_paper_v1  # 账户唯一标识；若调整成交参数请更换名称以建立新账户
+output_root: /home/qiye/zxy/backtest_runs
+
+universe:
+  index_code: 000852.SH
+  # 目录内必须是历史区间 index/members/000852.SH.csv（不是最新1000只的静态名单）
+  members_root: /REPLACE/WITH/REAL/INDEX/MEMBERS
+
+data:
+  minute_root: /home/qiye/zxy/data/minute_bars
+  daily_root: /home/qiye/zxy/data/daily_bars
+  cache_root: /home/qiye/zxy/cache/backtest
+  universe_name: csi1000_paper
+  start_date: 2026-11-01
+  end_date: 2030-12-31
+  # 可用 CSV/Parquet 按日提供股票涨跌停及停牌状态；缺省时涨跌停判断不完整
+  daily_status_path: null
+
+targets:
+  # 直接读取 src.strategy.io 原有的 target_weights.parquet；也支持 mode: file 的标准分钟目标。
+  mode: strategy_output
+  path: /REPLACE/WITH/STRATEGY/target_weights.parquet
+  # 原策略可能同时保存每1周、4周的目标；选出其中一套，不混在一起。
+  rebalance_interval: 1
+  date_only_signal_time: "15:00:00"
+
+account:
+  initial_capital: 10000000
+  rights_issue_policy: subscribe_or_fail
+
+execution:
+  order_time: "13:20:00"
+  # 从发单后下一根已结束的分钟 bar 开始连续撮合5根（午间休市自动跳过）。
+  window_bars: 5
+  retry_unfilled_days: 5
+  slippage_bps: 5
+  max_participation_rate: 0.05
+  block_one_price_limit: true
+  enforce_t_plus_one: true
+  # 实盘前应开启；需要先提供准确的日度涨跌停价格文件。
+  require_daily_limit_data: false
+
+costs:
+  commission_rate: 0.0003
+  minimum_commission: 5
+  transfer_fee_rate: 0.00001
+  stamp_duty_rate_before_20230828: 0.001
+  stamp_duty_rate_from_20230828: 0.0005

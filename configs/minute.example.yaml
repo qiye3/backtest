@@ -1,10 +1,10 @@
 run_name: minute_smoke_202504_v4
-output_root: ../runs
+output_root: /home/qiye/zxy/backtest_runs
 
 data:
-  minute_root: /home/qiye/zxy/data/stock_minute
-  daily_root: /home/qiye/zxy/data/日K线数据---复权因子-经典技术指标--bs点缠论划线
-  cache_root: /home/qiye/zxy/data/backtest_cache
+  minute_root: /home/qiye/zxy/data/minute_bars
+  daily_root: /home/qiye/zxy/data/daily_bars
+  cache_root: /home/qiye/zxy/cache/backtest
   universe_name: smoke_600000_000001
   start_date: 2025-04-01
   end_date: 2025-04-30
@@ -13,19 +13,19 @@ data:
 targets:
   mode: file
   path: ../examples/data/minute_targets.csv
-  date_only_signal_time: "14:55:00"
+  date_only_signal_time: "15:00:00"
 
 account:
   initial_capital: 10000000
-  liquidate_at_end: false
   rights_issue_policy: subscribe_or_fail
 
 execution:
   slippage_bps: 5
-  max_participation_rate: 0.10
-  lot_size: 100
-  execution_delay_bars: 1
-  time_in_force: day
+  max_participation_rate: 0.05
+  order_time: "13:20:00"
+  # 自动取发单之后5根完成的分钟K线，午休自动跳过
+  window_bars: 5
+  retry_unfilled_days: 5
   block_one_price_limit: true
   enforce_t_plus_one: true
 

@@ -160,8 +160,6 @@ class FactorParquetInputTests(unittest.TestCase):
         config_data["run"].update(
             {
                 "factors": False,
-                "simple_backtest": False,
-                "account_backtest": False,
                 "plotter": False,
                 "overall_evaluation": False,
             }

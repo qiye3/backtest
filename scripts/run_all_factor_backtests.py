@@ -79,8 +79,6 @@ def _build_configs(arguments: argparse.Namespace) -> dict[str, dict[str, Any]]:
                 {
                     "refresh_market_data": False,
                     "group_return": True,
-                    "simple_backtest": False,
-                    "account_backtest": False,
                     "plotter": False,
                     "overall_evaluation": True,
                 }

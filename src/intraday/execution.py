@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 
 import pandas as pd
 
 from src.intraday.config import CostConfig, ExecutionConfig
+from src.intraday.market_rules import is_legal_order, share_rules
 
 
 @dataclass
@@ -26,6 +28,7 @@ class Order:
     reject_reason: str | None = None
     blocked_bars: int = 0
     last_block_reason: str | None = None
+    sellable_at_submit: int | None = None
 
 
 @dataclass(frozen=True)
@@ -89,7 +92,7 @@ class Position:
 
 
 class ExecutionModel:
-    """使用 bar VWAP、容量上限和不利滑点撮合订单。"""
+    """使用分钟 VWAP、成交量容量、涨跌停方向和不利滑点撮合订单。"""
 
     def __init__(self, execution: ExecutionConfig, costs: CostConfig) -> None:
         self.execution = execution
@@ -101,23 +104,34 @@ class ExecutionModel:
         bar: pd.Series,
         cash: float,
         sellable_shares: int,
+        *,
+        capacity_override: int | None = None,
     ) -> Fill | None:
-        """撮合单根 bar；受限或不足一手时保留订单等待。"""
+        """完整委托必须合法；成交数量可小于最小委托量（交易所部分成交）。"""
         if order.status not in {"open", "partially_filled"} or order.remaining_shares <= 0:
             return None
+        # 委托可能直接由外部实盘适配器创建，不能只依赖 engine 的拆单校验。
+        # 订单总量须合法；随后每分钟的部分成交数量不再按整手取整。
+        if order.filled_shares == 0 and not is_legal_order(
+            order.code,
+            order.side,
+            order.requested_shares,
+            sellable_at_submit=(
+                order.sellable_at_submit
+                if order.sellable_at_submit is not None
+                else sellable_shares if order.side == "sell" else None
+            ),
+        ):
+            raise ValueError(
+                f"非法 A 股委托: {order.code} {order.side} {order.requested_shares} 股"
+            )
         blocked_reason = self._blocked_reason(order, bar)
         if blocked_reason is not None:
             order.blocked_bars += 1
             order.last_block_reason = blocked_reason
             return None
 
-        capacity = int(float(bar["volume"]) * self.execution.max_participation_rate)
-        capacity = _round_down(capacity, self.execution.lot_size)
-        available = capacity
-        if order.side == "sell":
-            available = min(available, sellable_shares)
-        shares = min(order.remaining_shares, available)
-        shares = _round_down(shares, self.execution.lot_size)
+        shares = self._candidate_shares(order, bar, sellable_shares, capacity_override)
         if shares <= 0:
             order.blocked_bars += 1
             order.last_block_reason = "insufficient_capacity_or_sellable_shares"
@@ -132,14 +146,75 @@ class ExecutionModel:
             return None
         return self._build_fill(order, bar["timestamp"], shares, price)
 
+    def quote_buy(
+        self, order: Order, bar: pd.Series, *, capacity_override: int | None = None,
+    ) -> tuple[int, float] | None:
+        """非破坏性报价：合法买单的部分成交可以为任意整数股。"""
+        if order.side != "buy" or order.status not in {"open", "partially_filled"}:
+            return None
+        if self._blocked_reason(order, bar) is not None:
+            return None
+        shares = self._candidate_shares(order, bar, 0, capacity_override)
+        if shares <= 0:
+            return None
+        return shares, self._execution_price("buy", bar)
+
+    def buy_cost(self, order: Order, shares: int, price: float, timestamp: pd.Timestamp) -> float:
+        """包含该订单累计最低佣金影响的预计现金支出；不改变订单。"""
+        if shares <= 0:
+            return 0.0
+        preview = self._preview_fill(order, timestamp, shares, price)
+        return preview.notional + preview.total_cost
+
+    def affordable_buy_shares(
+        self, order: Order, candidate_shares: int, price: float, cash: float,
+        timestamp: pd.Timestamp,
+    ) -> int:
+        """买单在给定预算中可成交的股数（部分成交不要求整手）。"""
+        return self._affordable_shares(order, candidate_shares, price, cash, timestamp)
+
+    def _candidate_shares(
+        self, order: Order, bar: pd.Series, sellable: int,
+        capacity_override: int | None = None,
+    ) -> int:
+        capacity = (int(float(bar["volume"]) * self.execution.max_participation_rate)
+                    if capacity_override is None else capacity_override)
+        # 最小申报数量已在订单创建时检查；真实成交可能不足100或200股。
+        if order.side == "sell":
+            return max(0, min(order.remaining_shares, capacity, sellable))
+        return max(0, min(order.remaining_shares, capacity))
+
     def _blocked_reason(self, order: Order, bar: pd.Series) -> str | None:
+        if self.execution.require_daily_limit_data and not (
+            _valid_limit(bar, "limit_up") and _valid_limit(bar, "limit_down")
+        ):
+            return "missing_daily_limit_data"
         if "is_suspended" in bar and pd.notna(bar["is_suspended"]):
             if bool(bar["is_suspended"]):
                 return "suspended"
-        if float(bar["volume"]) <= 0:
+        if any(
+            not math.isfinite(float(bar[name])) or float(bar[name]) <= 0
+            for name in ("vwap", "close", "high", "low")
+        ):
+            return "invalid_price"
+        if not math.isfinite(float(bar["volume"])) or float(bar["volume"]) <= 0:
             return "zero_volume"
-        if self._is_blocked_one_price_bar(order, bar):
-            return "one_price_limit"
+        if order.side == "buy" and _valid_limit(bar, "limit_up"):
+            if float(bar["close"]) >= float(bar["limit_up"]) - 1e-6:
+                return "buy_at_limit_up"
+        if order.side == "sell" and _valid_limit(bar, "limit_down"):
+            if float(bar["close"]) <= float(bar["limit_down"]) + 1e-6:
+                return "sell_at_limit_down"
+        missing_direction_limit = not _valid_limit(
+            bar, "limit_up" if order.side == "buy" else "limit_down"
+        )
+        if (
+            self.execution.block_one_price_limit
+            and missing_direction_limit
+            and float(bar["high"]) == float(bar["low"])
+        ):
+            # 缺少日度涨跌停价时，无法辨别一字价是否封板，双向保守拦截。
+            return "one_price_without_limit_data"
         return None
 
     def _execution_price(self, side: str, bar: pd.Series) -> float:
@@ -147,8 +222,25 @@ class ExecutionModel:
         impacted_price = float(bar["vwap"]) * (
             1 + direction * self.execution.slippage_bps / 10_000
         )
-        # 任何真实成交都应落在该分钟已经出现过的价格区间内。
-        return min(max(impacted_price, float(bar["low"])), float(bar["high"]))
+        if _valid_limit(bar, "limit_up"):
+            impacted_price = min(impacted_price, float(bar["limit_up"]))
+        if _valid_limit(bar, "limit_down"):
+            impacted_price = max(impacted_price, float(bar["limit_down"]))
+        # A 股 0.01 元报价单位，买入向上取整、卖出向下取整（对交易人不利）。
+        # 如日涨跌停价本身有效，则也位于合法价格网格上。
+        tick = 0.01
+        if side == "buy":
+            cents = math.ceil(impacted_price / tick - 1e-9)
+        else:
+            cents = math.floor(impacted_price / tick + 1e-9)
+        # 测试或数据源若给出非tick对齐的涨跌停价，也必须在合法价格网格内。
+        if _valid_limit(bar, "limit_up"):
+            cents = min(cents, math.floor(float(bar["limit_up"]) / tick + 1e-9))
+        if _valid_limit(bar, "limit_down"):
+            cents = max(cents, math.ceil(float(bar["limit_down"]) / tick - 1e-9))
+        if cents <= 0:
+            raise ValueError("有效委托价格必须为正")
+        return round(cents * tick, 2)
 
     def _affordable_shares(
         self,
@@ -158,13 +250,16 @@ class ExecutionModel:
         cash: float,
         timestamp: pd.Timestamp,
     ) -> int:
-        shares = candidate_shares
-        while shares > 0:
-            preview = self._preview_fill(order, timestamp, shares, price)
+        # 佣金含最低收费，二分查找确保费用后现金非负。
+        low, high = 0, max(0, candidate_shares)
+        while low < high:
+            mid = (low + high + 1) // 2
+            preview = self._preview_fill(order, timestamp, mid, price)
             if preview.notional + preview.total_cost <= cash + 1e-9:
-                return shares
-            shares -= self.execution.lot_size
-        return 0
+                low = mid
+            else:
+                high = mid - 1
+        return low
 
     def _build_fill(
         self,
@@ -224,23 +319,10 @@ class ExecutionModel:
             total_cost=total_cost,
         )
 
-    def _is_blocked_one_price_bar(self, order: Order, bar: pd.Series) -> bool:
-        if not self.execution.block_one_price_limit:
-            return False
-        is_one_price = float(bar["high"]) == float(bar["low"])
-        if not is_one_price:
-            return False
-        has_limit_up = "limit_up" in bar and pd.notna(bar["limit_up"])
-        has_limit_down = "limit_down" in bar and pd.notna(bar["limit_down"])
-        if has_limit_up or has_limit_down:
-            if order.side == "buy" and has_limit_up:
-                return float(bar["close"]) >= float(bar["limit_up"])
-            if order.side == "sell" and has_limit_down:
-                return float(bar["close"]) <= float(bar["limit_down"])
-            return False
-        # 没有精确涨跌停参考数据时保持保守，不猜测一字价格的方向。
-        return True
 
 
-def _round_down(shares: int, lot_size: int) -> int:
-    return max(0, int(shares) // lot_size * lot_size)
+def _valid_limit(bar: pd.Series, name: str) -> bool:
+    return (
+        name in bar and pd.notna(bar[name])
+        and math.isfinite(float(bar[name])) and float(bar[name]) > 0
+    )

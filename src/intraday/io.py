@@ -99,17 +99,21 @@ def _write_run_files(
         "fills.parquet": result.fills,
         "positions.parquet": result.positions,
         "nav.parquet": result.nav,
-        "daily_nav.parquet": _daily_nav(result.nav),
+        "daily_nav.parquet": _daily_nav(result.nav, config.account.initial_capital),
     }
     for filename, frame in frames.items():
         frame.to_parquet(run_directory / filename, index=False)
 
 
-def _daily_nav(nav: pd.DataFrame) -> pd.DataFrame:
+def _daily_nav(nav: pd.DataFrame, initial_capital: float) -> pd.DataFrame:
     daily = nav.copy()
     daily["date"] = daily["timestamp"].dt.tz_localize(None).dt.normalize()
     daily = daily.groupby("date", sort=True).last().reset_index()
-    daily["return"] = daily["nav"].pct_change()
+    daily["unit_nav"] = daily["nav"] / initial_capital
+    daily["cumulative_return"] = daily["unit_nav"] - 1
+    daily["return"] = daily["unit_nav"].pct_change()
+    if not daily.empty:
+        daily.loc[daily.index[0], "return"] = daily.iloc[0]["unit_nav"] - 1
     return daily
 
 
@@ -154,17 +158,25 @@ def _find_repository_root(start: Path) -> Path | None:
 
 
 def _target_input_identity(config: MinuteBacktestConfig) -> dict[str, object]:
-    if config.targets.mode == "file":
+    if config.targets.mode in {"file", "strategy_output", "factor_layers"}:
         assert config.targets.path is not None
         return {
-            "mode": "file",
+            "mode": config.targets.mode,
             "file": _file_identity(config.targets.path),
+            "rebalance_interval": config.targets.rebalance_interval,
+            "layer_count": config.targets.layer_count if config.targets.mode == "factor_layers" else None,
         }
-    assert config.targets.universe_path is not None
     assert config.targets.implementation is not None
     return {
-        "mode": "daily_minute_strategy",
-        "universe_file": _file_identity(config.targets.universe_path),
+        "mode": "strategy",
+        "universe_file": (
+            _file_identity(config.targets.universe_path)
+            if config.targets.universe_path is not None else None
+        ),
+        "index_members_file": (
+            _file_identity(config.universe.members_root / "000852.SH.csv")
+            if config.universe is not None else None
+        ),
         "implementation": {
             "module": config.targets.implementation.module,
             "class": config.targets.implementation.class_name,

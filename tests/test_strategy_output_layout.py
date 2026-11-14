@@ -107,11 +107,7 @@ class StrategyOutputLayoutTests(unittest.TestCase):
                     "run": {
                         "factors": True,
                         "group_return": False,
-                        "simple_backtest": False,
-                        "account_backtest": False,
                         "strategies": True,
-                        "strategy_simple_backtest": False,
-                        "strategy_account_backtest": False,
                         "plotter": True,
                         "overall_evaluation": False,
                     },

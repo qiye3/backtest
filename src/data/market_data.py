@@ -412,8 +412,8 @@ def _validate_market_data_config(market_data_config: Mapping[str, Any]) -> None:
         raise ValueError("market_data.start_date 不能晚于 end_date")
 
     universe_indices = {str(index_code) for index_code in market_data_config["universe_indices"]}
-    if universe_indices != REQUIRED_UNIVERSE_INDICES:
-        raise ValueError("universe_indices 必须是 000906.SH 与 000852.SH")
+    if universe_indices not in ({"000852.SH"}, REQUIRED_UNIVERSE_INDICES):
+        raise ValueError("universe_indices 只支持中证1000，或旧配置的中证800+中证1000")
 
     source_configs = market_data_config["sources"]
     stock_quote_fields = source_configs["stock_quote"]["fields"]

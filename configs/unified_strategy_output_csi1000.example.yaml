@@ -1,0 +1,43 @@
+# 直接使用已有 src.strategy.io 生成的目标仓位文件作为正式策略输入。
+run_name: csi1000_strategy_output_unified_v3
+output_root: /home/qiye/zxy/backtest_runs
+
+universe:
+  index_code: 000852.SH
+  members_root: /REPLACE/WITH/REAL/INDEX/MEMBERS
+
+data:
+  minute_root: /home/qiye/zxy/data/minute_bars
+  daily_root: /home/qiye/zxy/data/daily_bars
+  cache_root: /home/qiye/zxy/cache/backtest
+  universe_name: csi1000_strategy
+  start_date: 2025-04-01
+  end_date: 2025-12-31
+  daily_status_path: /REPLACE/WITH/DAILY_LIMITS.csv
+
+targets:
+  mode: strategy_output
+  path: /REPLACE/WITH/STRATEGY_RUN/target_weights.parquet
+  rebalance_interval: 1
+  date_only_signal_time: "15:00:00"
+
+account:
+  initial_capital: 10000000
+  rights_issue_policy: subscribe_or_fail
+
+execution:
+  order_time: "13:20:00"  # 可调，如 09:45:00、10:00:00、13:20:00
+  window_bars: 5         # 发单后连续5根已完成的1分钟K线
+  retry_unfilled_days: 5
+  slippage_bps: 5
+  max_participation_rate: 0.05
+  block_one_price_limit: true
+  enforce_t_plus_one: true
+  require_daily_limit_data: true  # 缺少真实日涨跌停价则不撮合该股票
+
+costs:
+  commission_rate: 0.0003
+  minimum_commission: 5
+  transfer_fee_rate: 0.00001
+  stamp_duty_rate_before_20230828: 0.001
+  stamp_duty_rate_from_20230828: 0.0005

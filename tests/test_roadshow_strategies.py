@@ -10,7 +10,7 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from src.backtest.targets import rebalance_dates
+from src.strategy.schedule import rebalance_dates
 from src.config import load_config
 from src.factors.config import load_factors
 from src.strategy.config import load_strategies

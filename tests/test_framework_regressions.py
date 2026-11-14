@@ -22,8 +22,6 @@ def test_strategy_dependencies_are_added_from_strategy_configs() -> None:
     raw_config = {
         "run": {
             "strategies": True,
-            "strategy_simple_backtest": False,
-            "strategy_account_backtest": False,
         },
         "market_data": {
             "sources": {

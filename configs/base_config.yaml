@@ -8,10 +8,6 @@ run:
   factors: true
   # 是否计算分组收益、IC 和 RankIC，并覆盖保存 group_return.parquet。
   group_return: true
-  # 是否运行归一化净值回测，并覆盖保存 simple_backtest.parquet。
-  simple_backtest: false
-  # 是否运行带现金账户和成交约束的回测，并覆盖保存 account_backtest.parquet。
-  account_backtest: false
   # 是否根据已有或本次生成的结果绘图。
   plotter: true
   # 是否在所有单因子阶段结束后输出跨因子相关性、IC 和多空收益分布。
@@ -35,10 +31,7 @@ output:
   save_parquet:
     factor: true
     group_return: false
-    simple_backtest: false
-    account_backtest: false
   # false 仅保存分组定义和汇总指标；true 额外保存曲线、动作、成交和换手明细。
-  save_backtest_details: false
 
 # 本机 Wind Parquet 缓存和真实研究区间。
 market_data:
@@ -50,14 +43,12 @@ market_data:
   start_date: "2024-01-02"
   end_date: "2026-09-09"
   # 定义交易日历和回测基准，且必须包含在 index_price.codes 中。
-  benchmark_index: 000906.SH
+  benchmark_index: 000852.SH
   universe_indices:
-    - 000906.SH
     - 000852.SH
   sources:
     index_price:
       codes:
-        - 000906.SH
       fields:
         - S_DQ_CLOSE
     stock_quote:
@@ -69,7 +60,7 @@ market_data:
       filters:
         industry_class_code: CITICS
 
-# 可选外部日收益宽表；配置后 evaluation 和 simple 共用，account 仍使用真实价格。
+# 可选外部日收益宽表；仅供日频因子评价使用，正式策略账户由分钟执行引擎计算。
 # 索引为交易日、列为股票代码，t 行表示 t-1 收盘至 t 收盘的收益。
 # external_returns:
 #   path: /path/to/daily_returns.parquet
@@ -80,7 +71,6 @@ group_return:
   start: "2024-02-01"
   end: "2026-09-09"
   universe_indices:
-    - 000906.SH
     - 000852.SH
   # 按锚定自然周选择评价截面。
   sampling:
@@ -120,98 +110,6 @@ group_return:
   max_stale_days: null
 
 # 回测仍以 G1–G10 为核心组，同时输出两个重叠极端组。
-simple_backtest:
-  start: "2024-02-01"
-  end: "2026-09-09"
-  universe_indices:
-    - 000906.SH
-    - 000852.SH
-  # 回测配置预留 1 周和 4 周，默认阶段开关关闭。
-  rebalance:
-    frequency: weekly
-    intervals:
-      - 1
-      - 4
-    weekday: FRI
-    anchor_date: "2024-02-02"
-    holiday_policy: previous_trading_day
-  # 成交价格可选 open、close。
-  trade_price: close
-  benchmark:
-    # 可选 index_price、index_total_return、zero；中性化外部收益可使用 zero。
-    source: index_price
-  # first_rebalance 等待首个计划调仓日；start 在回测首日建仓。
-  initial_entry: first_rebalance
-  # simple 回测固定要求初始归一化净值为 1。
-  initial_capital: 1.0
-  # 单边交易费率；0.001 表示千分之一。
-  transaction_cost_rate: 0.001
-  # 是否对首次建仓产生的换手收取费用。
-  charge_initial_cost: true
-  # 是否在回测末日清仓并计入换手和费用。
-  liquidate_at_end: false
-  # 分组为空时转为现金；还可选择 hold、error。
-  empty_group_policy: cash
-  # 股票数不足时持有现金。
-  insufficient_stocks_policy: cash
-  # 成交价缺失时直接报错；也可选择 previous_close。
-  missing_price_policy: previous_close
-  # previous_close 最多允许回看多少个交易日；null 表示不限制。
-  max_stale_days: null
-  # 保存 daily、rebalance 或 both 曲线。
-  curve_frequency: both
-  execution:
-    # simple 当前只支持 ideal，即忽略停牌和涨跌停约束。
-    policy: ideal
-
-# 维护现金、持股数量和实际成交状态的账户回测。
-account_backtest:
-  start: "2024-02-01"
-  end: "2026-09-09"
-  universe_indices:
-    - 000906.SH
-    - 000852.SH
-  rebalance:
-    frequency: weekly
-    intervals:
-      - 1
-      - 4
-    weekday: FRI
-    anchor_date: "2024-02-02"
-    holiday_policy: previous_trading_day
-  trade_price: close
-  benchmark:
-    source: index_price
-  initial_entry: first_rebalance
-  # 影响成交金额，不影响归一化净值口径。
-  initial_capital: 1000000
-  transaction_cost_rate: 0.001
-  charge_initial_cost: true
-  liquidate_at_end: false
-  empty_group_policy: cash
-  insufficient_stocks_policy: error
-  missing_price_policy: previous_close
-  max_stale_days: null
-  curve_frequency: both
-  execution:
-    # tradability 模式还需配置停牌和涨跌停阻断开关。
-    policy: ideal
-
-# 两类回测共用的绩效指标口径。
-metrics:
-  # 年化无风险收益率；Sharpe 会按收益频率换算。
-  risk_free_rate: 0.0
-  # 指标使用 daily 或 rebalance 收益序列。
-  return_frequency: daily
-  # A 股日频和周频年化因子。
-  annual_trading_days: 252
-  annual_weeks: 52
-  # 年化换手是否计入首次建仓换手。
-  include_initial_turnover: true
-  # simple 使用线性年化，account 使用几何复利年化。
-  simple_annual_return: linear
-  account_annual_return: compound
-
 plots:
   overall:
     factor_distribution_grid:

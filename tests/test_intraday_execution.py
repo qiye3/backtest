@@ -13,9 +13,6 @@ def _execution_config() -> ExecutionConfig:
     return ExecutionConfig(
         slippage_bps=5,
         max_participation_rate=0.1,
-        lot_size=100,
-        execution_delay_bars=1,
-        time_in_force="day",
         block_one_price_limit=False,
         enforce_t_plus_one=True,
     )
@@ -53,7 +50,7 @@ def test_participation_slippage_and_partial_fill_across_bars() -> None:
     second = model.match(order, _bar("2025-04-01 09:32"), 1_000_000, 0)
 
     assert first is not None and first.shares == 1000
-    assert first.price == pytest.approx(10.005)
+    assert first.price == pytest.approx(10.01)  # A股最小报价单位0.01元
     assert first.commission == 5
     assert second is not None and second.shares == 500
     assert second.commission == 0
@@ -73,13 +70,13 @@ def test_sell_stamp_duty_boundary() -> None:
     assert new_fill.stamp_duty == new_fill.notional * 0.0005
 
 
-def test_cash_constraint_rounds_down_to_whole_lots() -> None:
+def test_cash_constraint_allows_odd_partial_fill_from_legal_order() -> None:
     model = ExecutionModel(_execution_config(), _cost_config())
     order = Order(1, pd.Timestamp("2025-04-01", tz="Asia/Shanghai"), "600000.SH", "buy", 1000, 1000)
 
     fill = model.match(order, _bar("2025-04-01 09:31"), 2_020, 0)
 
-    assert fill is not None and fill.shares == 200
+    assert fill is not None and fill.shares == 201
     assert fill.notional + fill.total_cost <= 2_020
 
 

@@ -22,57 +22,12 @@ from src.factors.domains import (
 from src.group_return.grouping import validate_ranges
 from src.output_layout import factor_output_root
 
-STAGE_NAMES = [
-    "factors",
-    "group_return",
-    "simple_backtest",
-    "account_backtest",
-    "strategies",
-    "strategy_simple_backtest",
-    "strategy_account_backtest",
-    "plotter",
-    "overall_evaluation",
-]
-CALCULATION_STAGES = [
-    "factors",
-    "group_return",
-    "simple_backtest",
-    "account_backtest",
-    "strategies",
-    "strategy_simple_backtest",
-    "strategy_account_backtest",
-    "overall_evaluation",
-]
+STAGE_NAMES = ["factors", "group_return", "strategies", "plotter", "overall_evaluation"]
+CALCULATION_STAGES = ["factors", "group_return", "strategies", "overall_evaluation"]
 RUN_KEYS = {*STAGE_NAMES, "max_workers", "refresh_market_data"}
 ROOT_KEYS = {
-    "run",
-    "factors",
-    "strategies",
-    "strategy_analysis",
-    "output",
-    "market_data",
-    "group_return",
-    "simple_backtest",
-    "account_backtest",
-    "metrics",
-    "plots",
-    "external_returns",
-}
-PLOT_METRICS = {
-    "annual_return",
-    "annual_volatility",
-    "sharpe",
-    "max_drawdown",
-    "annual_turnover",
-    "annual_cost_rate",
-    "total_cost_rate",
-    "net_total_return",
-    "gross_total_return",
-    "benchmark_total_return",
-    "excess_total_return",
-    "tracking_error",
-    "information_ratio",
-    "mean_turnover",
+    "run", "factors", "strategies", "strategy_analysis", "output",
+    "market_data", "group_return", "plots", "external_returns",
 }
 DEFAULT_QUANTILE_EDGES = [
     [0.0, 0.01],
@@ -115,22 +70,10 @@ DEFAULT_BACKTEST_GROUP_COLORS = [
     "#A50026",
 ]
 DEFAULT_EVALUATION_GROUP_COLORS = list(reversed(DEFAULT_BACKTEST_GROUP_COLORS))
-DEFAULT_METRIC_COLUMNS = [
-    "annual_return",
-    "annual_volatility",
-    "sharpe",
-    "max_drawdown",
-    "mean_turnover",
-    "annual_turnover",
-]
 DEFAULT_PARQUET_RETENTION = {
     "factor": True,
     "group_return": False,
-    "simple_backtest": False,
-    "account_backtest": False,
     "strategy_weights": True,
-    "strategy_simple_backtest": False,
-    "strategy_account_backtest": False,
 }
 FACTOR_VARIANTS = {"raw", "industry_neutral"}
 DEFAULT_GROUPING = {
@@ -148,8 +91,6 @@ CONFIG_DEFAULTS = {
     "run": {
         "overall_evaluation": False,
         "strategies": False,
-        "strategy_simple_backtest": False,
-        "strategy_account_backtest": False,
     },
     "output": {
         "save_parquet": dict(DEFAULT_PARQUET_RETENTION),
@@ -165,21 +106,12 @@ CONFIG_DEFAULTS = {
             "type": "stock_return",
         },
     },
-    "simple_backtest": {
-        "factor_lag_days": 0,
-        "grouping": deepcopy(DEFAULT_GROUPING),
-    },
-    "account_backtest": {
-        "factor_lag_days": 0,
-        "grouping": deepcopy(DEFAULT_GROUPING),
-    },
     "plots": {
         "formats": ["png"],
         "dpi": 100,
         "width": 13.0,
         "row_height": 3.4,
         "font_family": "DejaVu Sans",
-        "curve_frequency": "daily",
         "missing_results": "error",
         "note": "",
         "legend_columns": 4,
@@ -210,22 +142,6 @@ CONFIG_DEFAULTS = {
                 "columns": 5,
                 "share_y_axis": True,
             },
-        },
-        "simple": {
-            "enabled": False,
-            "layout": "rows",
-            "group_colors": list(DEFAULT_BACKTEST_GROUP_COLORS),
-            "benchmark_color": "#777777",
-            "summary_quantile": [0.9, 1.0],
-            "metric_columns": list(DEFAULT_METRIC_COLUMNS),
-        },
-        "account": {
-            "enabled": False,
-            "layout": "rows",
-            "group_colors": list(DEFAULT_BACKTEST_GROUP_COLORS),
-            "benchmark_color": "#777777",
-            "summary_quantile": [0.9, 1.0],
-            "metric_columns": list(DEFAULT_METRIC_COLUMNS),
         },
         "strategy": {
             "enabled": True,
@@ -295,8 +211,8 @@ def load_config(config_path: str | Path) -> RunConfig:
     _validate_run(raw_config["run"])
     _check_keys(
         raw_config["output"],
-        {"root", "save_parquet", "save_backtest_details"},
-        {"root", "save_parquet", "save_backtest_details"},
+        {"root", "save_parquet"},
+        {"root", "save_parquet"},
         "output",
     )
     parquet_settings = raw_config["output"]["save_parquet"]
@@ -312,10 +228,6 @@ def load_config(config_path: str | Path) -> RunConfig:
             parquet_settings[parquet_name],
             f"output.save_parquet.{parquet_name}",
         )
-    _boolean(
-        raw_config["output"]["save_backtest_details"],
-        "output.save_backtest_details",
-    )
 
     run_settings = raw_config["run"]
     if (
@@ -430,25 +342,6 @@ def load_config(config_path: str | Path) -> RunConfig:
     )
     if run_settings["group_return"] or run_settings["overall_evaluation"]:
         _validate_group_return(_section(raw_config, "group_return"))
-    for stage in ["simple_backtest", "account_backtest"]:
-        strategy_stage = f"strategy_{stage}"
-        if run_settings[stage] or run_settings[strategy_stage]:
-            _validate_backtest(_section(raw_config, stage), stage)
-    if any(
-        run_settings[stage]
-        for stage in [
-            "simple_backtest",
-            "account_backtest",
-            "strategy_simple_backtest",
-            "strategy_account_backtest",
-        ]
-    ):
-        _validate_metrics(_section(raw_config, "metrics"))
-    if external_return_path is not None and (
-        run_settings["simple_backtest"] or run_settings["strategy_simple_backtest"]
-    ):
-        if raw_config["simple_backtest"]["trade_price"] != "close":
-            raise ValueError("外部日收益回测要求 simple_backtest.trade_price 为 close")
     if run_settings["plotter"] or run_settings["overall_evaluation"]:
         _validate_plots(_section(raw_config, "plots"))
     _validate_strategy_analysis(raw_config["strategy_analysis"])
@@ -529,14 +422,7 @@ def _complete_strategy_market_data_sources(
     """把策略基准权重依赖补入本次实际运行配置。"""
     run_settings = raw_config["run"]
     strategy_calculation_enabled = (
-        any(
-            run_settings[stage_name]
-            for stage_name in [
-                "strategies",
-                "strategy_simple_backtest",
-                "strategy_account_backtest",
-            ]
-        )
+        run_settings["strategies"]
         or raw_config.get("strategy_analysis", {}).get("enabled", False)
     )
     if not strategy_calculation_enabled:
@@ -599,7 +485,7 @@ def _merge_config_defaults(
                 pending_sections.append((default_value, value))
             else:
                 target_section[key] = deepcopy(value)
-    for section_name in ["group_return", "simple_backtest", "account_backtest"]:
+    for section_name in ["group_return"]:
         configured_grouping = configured_values.get(section_name, {}).get("grouping")
         if (
             configured_grouping is not None
@@ -720,93 +606,6 @@ def _validate_evaluation_target(settings: Mapping[str, Any]) -> None:
                 raise ValueError(f"group_return.target.{field_name} 必须是非空字符串")
 
 
-def _validate_backtest(
-    settings: Mapping[str, Any],
-    section_name: str,
-) -> None:
-    """校验一类回测的日期、调仓、费用、基准和执行口径。"""
-    expected_keys = {
-        "start",
-        "end",
-        "universe_indices",
-        "grouping",
-        "rebalance",
-        "factor_lag_days",
-        "trade_price",
-        "benchmark",
-        "initial_entry",
-        "initial_capital",
-        "transaction_cost_rate",
-        "charge_initial_cost",
-        "liquidate_at_end",
-        "empty_group_policy",
-        "insufficient_stocks_policy",
-        "missing_price_policy",
-        "max_stale_days",
-        "curve_frequency",
-        "execution",
-    }
-    _check_keys(settings, expected_keys, expected_keys, section_name)
-    _date_interval(settings, section_name)
-    _universe(settings["universe_indices"], section_name)
-    _validate_grouping(settings["grouping"], f"{section_name}.grouping")
-    _validate_rebalance_schedule(
-        settings["rebalance"],
-        f"{section_name}.rebalance",
-    )
-    _nonnegative_integer(
-        settings["factor_lag_days"],
-        f"{section_name}.factor_lag_days",
-    )
-
-    choices = {
-        "trade_price": {"open", "close"},
-        "initial_entry": {"first_rebalance", "start"},
-        "empty_group_policy": {"cash", "hold", "error"},
-        "insufficient_stocks_policy": {"cash", "hold", "error"},
-        "curve_frequency": {"daily", "rebalance", "both"},
-    }
-    for field_name, allowed_values in choices.items():
-        _choice(
-            settings[field_name],
-            allowed_values,
-            f"{section_name}.{field_name}",
-        )
-    _check_keys(
-        settings["benchmark"],
-        {"source"},
-        {"source"},
-        f"{section_name}.benchmark",
-    )
-    benchmark_sources = {"index_price", "index_total_return"}
-    if section_name == "simple_backtest":
-        benchmark_sources.add("zero")
-    _choice(
-        settings["benchmark"]["source"],
-        benchmark_sources,
-        f"{section_name}.benchmark.source",
-    )
-
-    initial_capital = _finite_number(
-        settings["initial_capital"],
-        f"{section_name}.initial_capital",
-    )
-    if initial_capital <= 0:
-        raise ValueError(f"{section_name}.initial_capital 必须为正数")
-    if section_name == "simple_backtest" and initial_capital != 1:
-        raise ValueError("simple_backtest.initial_capital 必须为 1")
-    cost_rate = _finite_number(
-        settings["transaction_cost_rate"],
-        f"{section_name}.transaction_cost_rate",
-    )
-    if not 0 <= cost_rate < 1:
-        raise ValueError(f"{section_name}.transaction_cost_rate 必须在 [0, 1)")
-    for field_name in ["charge_initial_cost", "liquidate_at_end"]:
-        _boolean(settings[field_name], f"{section_name}.{field_name}")
-    _validate_missing_price(settings, section_name)
-    _validate_execution(settings["execution"], section_name)
-
-
 def _validate_grouping(
     settings: Mapping[str, Any],
     location: str,
@@ -892,122 +691,6 @@ def _validate_sampling_schedule(
     )
 
 
-def _validate_rebalance_schedule(
-    settings: Mapping[str, Any],
-    location: str,
-) -> None:
-    """按日度或周度模式校验回测调仓计划。"""
-    frequency = settings["frequency"]
-    _choice(
-        frequency,
-        {"daily", "weekly", "quarterly"},
-        f"{location}.frequency",
-    )
-    expected_keys = {"frequency", "intervals"}
-    if frequency == "weekly":
-        expected_keys |= {"weekday", "anchor_date", "holiday_policy"}
-    elif frequency == "quarterly":
-        expected_keys.add("months")
-        if settings.get("date_rule") == "second_friday_next_trading_day":
-            expected_keys.add("date_rule")
-        else:
-            expected_keys.add("trading_day")
-    _check_keys(settings, expected_keys, expected_keys, location)
-    _positive_integer_list(settings["intervals"], f"{location}.intervals")
-    if frequency == "daily":
-        return
-    if frequency == "quarterly":
-        months = settings["months"]
-        if (
-            not isinstance(months, list)
-            or not months
-            or len(months) != len(set(months))
-            or any(not isinstance(month, int) or not 1 <= month <= 12 for month in months)
-        ):
-            raise ValueError(f"{location}.months 必须是唯一的 1 至 12 月份列表")
-        if "trading_day" in settings:
-            _positive_integer(
-                settings["trading_day"],
-                f"{location}.trading_day",
-            )
-        return
-    _choice(
-        settings["weekday"],
-        {"MON", "TUE", "WED", "THU", "FRI"},
-        f"{location}.weekday",
-    )
-    _choice(
-        settings["holiday_policy"],
-        {"previous_trading_day", "skip"},
-        f"{location}.holiday_policy",
-    )
-    if pd.isna(pd.Timestamp(settings["anchor_date"])):
-        raise ValueError(f"{location}.anchor_date 不是有效日期")
-
-
-def _validate_execution(
-    settings: Mapping[str, Any],
-    section_name: str,
-) -> None:
-    """校验 ideal 或 tradability 成交规则使用的字段。"""
-    policy = settings["policy"]
-    _choice(
-        policy,
-        {"ideal", "tradability"},
-        f"{section_name}.execution.policy",
-    )
-    execution_keys = {"policy"}
-    if policy == "tradability":
-        execution_keys |= {
-            "block_suspended",
-            "block_buy_limit_up",
-            "block_sell_limit_down",
-        }
-    _check_keys(
-        settings,
-        execution_keys,
-        execution_keys,
-        f"{section_name}.execution",
-    )
-    if section_name == "simple_backtest" and policy != "ideal":
-        raise ValueError("simple_backtest 只支持 ideal execution")
-    for field_name in execution_keys - {"policy"}:
-        _boolean(settings[field_name], f"{section_name}.execution.{field_name}")
-
-
-def _validate_metrics(settings: Mapping[str, Any]) -> None:
-    """校验风险、年化收益和换手指标设置。"""
-    expected_keys = {
-        "risk_free_rate",
-        "return_frequency",
-        "annual_trading_days",
-        "annual_weeks",
-        "include_initial_turnover",
-        "simple_annual_return",
-        "account_annual_return",
-    }
-    _check_keys(settings, expected_keys, expected_keys, "metrics")
-    risk_free_rate = _finite_number(
-        settings["risk_free_rate"],
-        "metrics.risk_free_rate",
-    )
-    if risk_free_rate <= -1:
-        raise ValueError("metrics.risk_free_rate 必须大于 -1")
-    choices = {
-        "return_frequency": {"daily", "rebalance"},
-        "simple_annual_return": {"linear", "compound"},
-        "account_annual_return": {"linear", "compound"},
-    }
-    for field_name, allowed_values in choices.items():
-        _choice(settings[field_name], allowed_values, f"metrics.{field_name}")
-    for field_name in ["annual_trading_days", "annual_weeks"]:
-        _positive_integer(settings[field_name], f"metrics.{field_name}")
-    _boolean(
-        settings["include_initial_turnover"],
-        "metrics.include_initial_turnover",
-    )
-
-
 def _validate_plots(settings: Mapping[str, Any]) -> None:
     """校验绘图公共设置和四类图的必要字段。"""
     expected_keys = {
@@ -1016,15 +699,12 @@ def _validate_plots(settings: Mapping[str, Any]) -> None:
         "width",
         "row_height",
         "font_family",
-        "curve_frequency",
         "missing_results",
         "note",
         "legend_columns",
         "distribution",
         "evaluation",
         "overall",
-        "simple",
-        "account",
         "strategy",
     }
     _check_keys(settings, expected_keys, expected_keys, "plots")
@@ -1046,11 +726,6 @@ def _validate_plots(settings: Mapping[str, Any]) -> None:
         if _finite_number(settings[field_name], f"plots.{field_name}") <= 0:
             raise ValueError(f"plots.{field_name} 必须为正数")
     _choice(
-        settings["curve_frequency"],
-        {"daily", "rebalance"},
-        "plots.curve_frequency",
-    )
-    _choice(
         settings["missing_results"],
         {"skip", "error"},
         "plots.missing_results",
@@ -1058,8 +733,6 @@ def _validate_plots(settings: Mapping[str, Any]) -> None:
     _validate_distribution_plot(settings["distribution"])
     _validate_evaluation_plot(settings["evaluation"])
     _validate_overall_plot(settings["overall"])
-    _validate_simple_plot(settings["simple"])
-    _validate_account_plot(settings["account"])
     _plot_keys(settings["strategy"], {"enabled"}, "strategy")
 
 
@@ -1170,59 +843,6 @@ def _validate_overall_plot(settings: Mapping[str, Any]) -> None:
             grid_settings["share_y_axis"],
             "plots.overall.group_return_grid.share_y_axis",
         )
-
-
-def _validate_simple_plot(settings: Mapping[str, Any]) -> None:
-    """校验 simple 曲线和指标摘要设置。"""
-    fields = {
-        "enabled",
-        "layout",
-        "group_colors",
-        "benchmark_color",
-        "summary_quantile",
-        "metric_columns",
-    }
-    _plot_keys(settings, fields, "simple")
-    if not settings["enabled"]:
-        return
-    _choice(settings["layout"], {"rows"}, "plots.simple.layout")
-    _colors(settings["group_colors"], "plots.simple.group_colors")
-    _validate_metric_table(settings, "plots.simple")
-
-
-def _validate_account_plot(settings: Mapping[str, Any]) -> None:
-    """校验 account 曲线和指标摘要设置。"""
-    fields = {
-        "enabled",
-        "layout",
-        "group_colors",
-        "benchmark_color",
-        "summary_quantile",
-        "metric_columns",
-    }
-    _plot_keys(settings, fields, "account")
-    if not settings["enabled"]:
-        return
-    _choice(
-        settings["layout"],
-        {"rows", "columns"},
-        "plots.account.layout",
-    )
-    _colors(settings["group_colors"], "plots.account.group_colors")
-    _validate_metric_table(settings, "plots.account")
-
-
-def _validate_metric_table(settings: Mapping[str, Any], location: str) -> None:
-    """校验回测图底部指标表的分位组和展示字段。"""
-    _quantile_pair(settings["summary_quantile"], f"{location}.summary_quantile")
-    metric_columns = settings["metric_columns"]
-    if (
-        not isinstance(metric_columns, list)
-        or not metric_columns
-        or len(metric_columns) != len(set(metric_columns))
-        or set(metric_columns) - PLOT_METRICS
-    ):
-        raise ValueError(f"{location}.metric_columns 包含未知或重复指标")
 
 
 def _plot_keys(

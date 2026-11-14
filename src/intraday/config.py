@@ -25,6 +25,14 @@ class MinuteDataConfig:
 
 
 @dataclass(frozen=True)
+class UniverseConfig:
+    """历史指数成份根目录（内含 000852.SH.csv）与固定指数代码。"""
+
+    members_root: Path
+    index_code: str = "000852.SH"
+
+
+@dataclass(frozen=True)
 class StrategyImplementationConfig:
     """描述一个可动态导入的分钟日频策略。"""
 
@@ -42,28 +50,34 @@ class TargetConfig:
     mode: str = "file"
     universe_path: Path | None = None
     implementation: StrategyImplementationConfig | None = None
+    rebalance_interval: int | None = None
+    # 只有 targets.mode=factor_layers 时使用，单策略回测不依赖因子分层。
+    layer_count: int = 10
+    factor_column: str = "factor_value"
+    descending: bool = False
 
 
 @dataclass(frozen=True)
 class AccountConfig:
-    """描述多头现金账户边界。"""
+    """多头现金账户边界。"""
 
     initial_capital: float
-    liquidate_at_end: bool
     rights_issue_policy: str = "subscribe_or_fail"
 
 
 @dataclass(frozen=True)
 class ExecutionConfig:
-    """描述分钟 bar 撮合、容量和 A 股交易约束。"""
+    """唯一的固定时间窗口分钟成交规则；窗口边界在加载配置时推导。"""
 
     slippage_bps: float
     max_participation_rate: float
-    lot_size: int
-    execution_delay_bars: int
-    time_in_force: str
     block_one_price_limit: bool
     enforce_t_plus_one: bool
+    order_time: str = "10:00:00"
+    window_start: str = "10:01:00"
+    window_end: str = "10:05:00"
+    retry_unfilled_days: int = 5
+    require_daily_limit_data: bool = False
 
 
 @dataclass(frozen=True)
@@ -90,6 +104,7 @@ class MinuteBacktestConfig:
     execution: ExecutionConfig
     costs: CostConfig
     raw: dict[str, Any]
+    universe: UniverseConfig | None = None
 
 
 def load_minute_config(config_path: str | Path) -> MinuteBacktestConfig:
@@ -103,6 +118,7 @@ def load_minute_config(config_path: str | Path) -> MinuteBacktestConfig:
         raw_values,
         {"run_name", "output_root", "data", "targets", "account", "execution", "costs"},
         "root",
+        optional={"universe"},
     )
     data_values = _mapping(raw_values["data"], "data")
     target_values = _mapping(raw_values["targets"], "targets")
@@ -110,7 +126,7 @@ def load_minute_config(config_path: str | Path) -> MinuteBacktestConfig:
     execution_values = _mapping(raw_values["execution"], "execution")
     cost_values = _mapping(raw_values["costs"], "costs")
 
-    return MinuteBacktestConfig(
+    config = MinuteBacktestConfig(
         path=resolved_path,
         run_name=_nonempty_string(raw_values["run_name"], "run_name"),
         output_root=_resolve_path(resolved_path, raw_values["output_root"]),
@@ -120,7 +136,32 @@ def load_minute_config(config_path: str | Path) -> MinuteBacktestConfig:
         execution=_load_execution_config(execution_values),
         costs=_load_cost_config(cost_values),
         raw=dict(raw_values),
+        universe=_load_universe_config(resolved_path, raw_values.get("universe")),
     )
+    if (
+        config.targets.mode in {"strategy", "factor_layers"}
+        and config.universe is None and config.targets.universe_path is None
+    ):
+        raise ValueError("策略或分层需要 universe.members_root 或 targets.universe_path")
+    if config.targets.mode == "factor_layers" and config.universe is None:
+        raise ValueError("正式分层要求真实中证1000历史成份 universe.members_root")
+    if config.execution.require_daily_limit_data and config.data.daily_status_path is None:
+        raise ValueError("execution.require_daily_limit_data=true 时必须配置 data.daily_status_path")
+    return config
+
+
+def _load_universe_config(config_path: Path, value: Any) -> UniverseConfig | None:
+    if value is None:
+        return None  # 兼容老配置；新版本正式账户必须提供历史成份文件
+    values = _mapping(value, "universe")
+    _check_keys(values, {"members_root"}, "universe", optional={"index_code"})
+    index_code = str(values.get("index_code", "000852.SH"))
+    if index_code != "000852.SH":
+        raise ValueError("正式股票池固定为中证1000（000852.SH）")
+    root = _existing_directory(config_path, values["members_root"], "universe.members_root")
+    if not (root / f"{index_code}.csv").is_file():
+        raise FileNotFoundError(f"缺少历史成份文件: {root / (index_code + '.csv')}")
+    return UniverseConfig(members_root=root, index_code=index_code)
 
 
 def _load_data_config(
@@ -169,12 +210,12 @@ def _load_target_config(
             "path",
             "date_only_signal_time",
             "universe_path",
-            "implementation",
+            "implementation", "rebalance_interval", "layer_count", "factor_column", "descending",
         },
     )
     mode = str(values.get("mode", "file")).strip()
-    if mode not in {"file", "daily_minute_strategy"}:
-        raise ValueError("targets.mode 只支持 file 或 daily_minute_strategy")
+    if mode not in {"file", "strategy_output", "strategy", "factor_layers"}:
+        raise ValueError("targets.mode 只支持 file、strategy_output、strategy 或 factor_layers")
 
     signal_time = _nonempty_string(
         values.get("date_only_signal_time", "15:00:00"),
@@ -185,24 +226,37 @@ def _load_target_config(
     except ValueError as error:
         raise ValueError("targets.date_only_signal_time 不是有效时间") from error
 
-    if mode == "file":
+    if mode in {"file", "strategy_output", "factor_layers"}:
         target_path = _required_existing_file(config_path, values.get("path"), "targets.path")
         if values.get("universe_path") is not None or values.get("implementation") is not None:
-            raise ValueError("targets.mode=file 时不能配置 universe_path 或 implementation")
+            raise ValueError("文件目标模式不能配置 universe_path 或 implementation")
+        interval = values.get("rebalance_interval")
+        if mode == "strategy_output":
+            interval = _positive_integer(interval, "targets.rebalance_interval")
+        elif interval is not None:
+            raise ValueError("仅 strategy_output 需要 targets.rebalance_interval")
+        if mode == "factor_layers":
+            layer_count = _positive_integer(values.get("layer_count", 10), "targets.layer_count")
+            if layer_count < 2 or layer_count > 100:
+                raise ValueError("targets.layer_count 必须为2至100")
+            factor_column = _nonempty_string(values.get("factor_column", "factor_value"), "targets.factor_column")
+            descending = _boolean(values.get("descending", False), "targets.descending")
+        else:
+            if any(name in values for name in ("layer_count", "factor_column", "descending")):
+                raise ValueError("分层参数只允许在 targets.mode=factor_layers 使用")
+            layer_count, factor_column, descending = 10, "factor_value", False
         return TargetConfig(
-            mode=mode,
-            path=target_path,
-            date_only_signal_time=signal_time,
-            universe_path=None,
-            implementation=None,
+            mode=mode, path=target_path, date_only_signal_time=signal_time,
+            universe_path=None, implementation=None, rebalance_interval=interval,
+            layer_count=layer_count, factor_column=factor_column, descending=descending,
         )
 
-    if values.get("path") is not None:
-        raise ValueError("targets.mode=daily_minute_strategy 时不能配置 path")
-    universe_path = _required_existing_file(
-        config_path,
-        values.get("universe_path"),
-        "targets.universe_path",
+    if values.get("path") is not None or values.get("rebalance_interval") is not None:
+        raise ValueError("targets.mode=strategy 时不能配置 path 或 rebalance_interval")
+    if any(name in values for name in ("layer_count", "factor_column", "descending")):
+        raise ValueError("分层参数只允许在 targets.mode=factor_layers 使用")
+    universe_path = _optional_existing_file(
+        config_path, values.get("universe_path"), "targets.universe_path",
     )
     implementation_values = _mapping(values.get("implementation"), "targets.implementation")
     _check_keys(
@@ -232,59 +286,43 @@ def _load_target_config(
 
 
 def _load_account_config(values: Mapping[str, Any]) -> AccountConfig:
-    _check_keys(
-        values,
-        {"initial_capital", "liquidate_at_end"},
-        "account",
-        optional={"rights_issue_policy"},
-    )
+    _check_keys(values, {"initial_capital"}, "account", optional={"rights_issue_policy"})
     rights_issue_policy = str(values.get("rights_issue_policy", "subscribe_or_fail")).strip()
     if rights_issue_policy not in {"subscribe_or_fail", "ignore"}:
         raise ValueError("account.rights_issue_policy 只支持 subscribe_or_fail 或 ignore")
     return AccountConfig(
         initial_capital=_positive_number(values["initial_capital"], "account.initial_capital"),
-        liquidate_at_end=_boolean(values["liquidate_at_end"], "account.liquidate_at_end"),
         rights_issue_policy=rights_issue_policy,
     )
 
 
 def _load_execution_config(values: Mapping[str, Any]) -> ExecutionConfig:
+    """正式回测只支持一套固定成交窗口，不读取已停用的参数。"""
     _check_keys(
         values,
-        {
-            "slippage_bps",
-            "max_participation_rate",
-            "lot_size",
-            "execution_delay_bars",
-            "time_in_force",
-            "block_one_price_limit",
-            "enforce_t_plus_one",
-        },
+        {"slippage_bps", "max_participation_rate", "block_one_price_limit", "enforce_t_plus_one"},
         "execution",
+        optional={"order_time", "window_bars", "retry_unfilled_days", "require_daily_limit_data"},
     )
-    time_in_force = _nonempty_string(values["time_in_force"], "execution.time_in_force")
-    if time_in_force != "day":
-        raise ValueError("execution.time_in_force 只支持 day")
+    order_time = _clock_time(values.get("order_time", "10:00:00"), "execution.order_time")
+    window_bars = _positive_integer(values.get("window_bars", 5), "execution.window_bars")
+    window_start, window_end = _derive_execution_window(order_time, window_bars)
+    retry_days = values.get("retry_unfilled_days", 5)
+    if not isinstance(retry_days, int) or isinstance(retry_days, bool) or retry_days < 0:
+        raise ValueError("execution.retry_unfilled_days 必须是非负整数")
     return ExecutionConfig(
         slippage_bps=_nonnegative_number(values["slippage_bps"], "execution.slippage_bps"),
         max_participation_rate=_rate(
-            values["max_participation_rate"],
-            "execution.max_participation_rate",
-            allow_one=True,
+            values["max_participation_rate"], "execution.max_participation_rate", allow_one=True,
         ),
-        lot_size=_positive_integer(values["lot_size"], "execution.lot_size"),
-        execution_delay_bars=_positive_integer(
-            values["execution_delay_bars"],
-            "execution.execution_delay_bars",
-        ),
-        time_in_force=time_in_force,
-        block_one_price_limit=_boolean(
-            values["block_one_price_limit"],
-            "execution.block_one_price_limit",
-        ),
-        enforce_t_plus_one=_boolean(
-            values["enforce_t_plus_one"],
-            "execution.enforce_t_plus_one",
+        block_one_price_limit=_boolean(values["block_one_price_limit"], "execution.block_one_price_limit"),
+        enforce_t_plus_one=_boolean(values["enforce_t_plus_one"], "execution.enforce_t_plus_one"),
+        order_time=order_time,
+        window_start=window_start,
+        window_end=window_end,
+        retry_unfilled_days=retry_days,
+        require_daily_limit_data=_boolean(
+            values.get("require_daily_limit_data", False), "execution.require_daily_limit_data",
         ),
     )
 
@@ -429,3 +467,39 @@ def _boolean(value: Any, location: str) -> bool:
     if not isinstance(value, bool):
         raise TypeError(f"{location} 必须是布尔值")
     return value
+
+
+def _clock_time(value: Any, location: str) -> str:
+    """将执行时刻标准化，按字典序也能正确比较。"""
+    from datetime import time
+
+    if not isinstance(value, str):
+        raise TypeError(f"{location} 必须是 HH:MM[:SS] 字符串")
+    try:
+        return time.fromisoformat(value).strftime("%H:%M:%S")
+    except ValueError as error:
+        raise ValueError(f"{location} 必须是有效的 HH:MM[:SS] 时刻") from error
+
+
+def _derive_execution_window(order_time: str, window_bars: int) -> tuple[str, str]:
+    """从指定发单分钟起取后续 N 根已结束的交易时段分钟K线，自动跳过午休。"""
+    hh, mm, ss = map(int, order_time.split(":"))
+    if ss != 0:
+        raise ValueError("固定窗口的 execution.order_time 只能精确到整分钟")
+    reference = hh * 60 + mm
+    valid = list(range(9 * 60 + 31, 11 * 60 + 31)) + list(
+        range(13 * 60 + 1, 15 * 60 + 1)
+    )
+    subsequent = [minute for minute in valid if minute > reference]
+    in_session = (9 * 60 + 31 <= reference <= 11 * 60 + 30) or (
+        13 * 60 <= reference < 15 * 60
+    )
+    if not in_session or not subsequent:
+        raise ValueError("发单时刻须在 09:31—11:30 或 13:00—14:59 之间")
+    if len(subsequent) < window_bars:
+        raise ValueError("交易日剩余分钟数量不足以覆盖 window_bars")
+    def stamp(value: int) -> str:
+        return f"{value // 60:02d}:{value % 60:02d}:00"
+    return stamp(subsequent[0]), stamp(subsequent[window_bars - 1])
+
+

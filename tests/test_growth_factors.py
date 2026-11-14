@@ -45,8 +45,6 @@ class GrowthFactorTests(unittest.TestCase):
         config["run"].update(
             {
                 "group_return": False,
-                "simple_backtest": False,
-                "account_backtest": False,
                 "plotter": False,
                 "overall_evaluation": False,
                 "max_workers": 2,
@@ -102,8 +100,6 @@ class GrowthFactorTests(unittest.TestCase):
         enabled_stages = ("factors", "group_return", "overall_evaluation")
         self.assertTrue(all(template["run"][stage_name] for stage_name in enabled_stages))
         self.assertFalse(template["run"]["plotter"])
-        self.assertFalse(template["run"]["simple_backtest"])
-        self.assertFalse(template["run"]["account_backtest"])
 
     def test_income_factor_uses_actual_announcement_date(self) -> None:
         """累计营收应在 ACTUAL_ANN_DT 生效，并正确还原单季度值。"""

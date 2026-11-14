@@ -1,233 +1,59 @@
-# Factor Backtest
+# Factor Backtest · 中证1000统一策略账户 v4
 
-一个由 YAML 驱动的日频因子评价与分组回测项目。主入口按固定顺序运行 Factor、
-group return、simple backtest、account backtest 和 plotter；是否执行每个阶段只由
-主配置中的 `run` 布尔开关决定。
+本项目保留日频因子计算、IC/RankIC和分组研究；正式策略回测统一使用分钟成交与持续现金账户，不再运行旧 `simple` 加法累计或旧 `account` 回测引擎。**普通策略是主入口，因子分层仅是可选的快速评估方式。**
 
-## 分钟目标仓位回测
+- 直接配置策略类：`configs/unified_strategy_csi1000.example.yaml`，`targets.mode: strategy`。
+- 使用既有策略目标文件：`targets.mode: strategy_output`（`target_weights.parquet`）。
+- 可选因子分层：`configs/unified_factor_layers_csi1000.example.yaml`，`targets.mode: factor_layers`，各层独立现金账户和每日复利净值。
+- 每日事后模拟盘：`configs/paper_csi1000.example.yaml`，支持按文件载入每天的目标、连续账户更新。
 
-`src.intraday` 是独立于原 TK 日频链路的通用账户回测入口。策略只需输出长表目标
-仓位，必需字段为 `signal_timestamp,code,target_weight`。日期型信号会使用 YAML 中的
-`date_only_signal_time`；时间统一按 `Asia/Shanghai` 解析。当前第一阶段只支持多头、
-无杠杆，单个时间点的权重和不能超过 1；未出现在新目标中的已有持仓视为目标为 0。
-长区间运行按交易日流式读取，不需要把整个历史分钟表一次性放入内存。
+**完整v4架构、配置字段、交易约束和输出说明：[`docs/unified_backtest_v4.md`](docs/unified_backtest_v4.md)。**
 
-```bash
-python -m scripts.run_minute_backtest --config configs/minute.example.yaml
-```
-
-示例配置直接读取 `/home/qiye/zxy/data/stock_minute` 的每日 ZIP/7z，只抽取股票池内
-CSV，并在 `data.cache_root/minute/<universe_name>/` 生成按日 Parquet 缓存。支持
-`sh/600000.csv` 和 `YYYYMMDD/sh/600000.csv` 两种包内路径；240 根 bar 按结束时刻
-重建为 `09:31–11:30`、`13:01–15:00`。日线参考数据既可为散装 XLSX，也可位于 ZIP
-内部，红利、送股、转增和配股字段按每十股口径换算后在开盘前入账。缓存绑定源归档
-的大小和修改时间，写入采用原子替换；源归档或解析规则变化时会自动重建。
-
-默认成交模型使用 bar VWAP 加 5 bps 不利滑点，并限制为 bar 成交量的 10%。订单可
-跨 bar 部分成交但日终撤单；同时执行佣金（万三、最低 5 元）、卖出印花税（
-2023-08-28 前千一、之后万五）、过户费、100 股整手、现金约束和 T+1。零成交量 bar
-不成交；若行情提供 `limit_up/limit_down` 则按涨跌停方向阻断，当前原始分钟文件没有
-涨跌停字段时对 `high == low` 的一字 bar 采取保守阻断。
-
-每次运行在 `output_root/run_name/` 保存配置快照、运行环境、Git 与依赖信息、数据质量
-问题、指标以及 orders、fills、positions、nav、daily_nav 六套 Parquet 账本。`run_name`
-已存在时会拒绝覆盖；结果先写临时目录，成功后才发布。
-
-### 用分钟数据生成日频信号
-
-把目标配置改为 `targets.mode: daily_minute_strategy`，并提供固定研究股票池和策略类：
-
-```yaml
-targets:
-  mode: daily_minute_strategy
-  universe_path: ../examples/data/minute_universe.csv
-  implementation:
-    module: examples.intraday.daily_vwap_momentum
-    class: DailyVwapMomentumStrategy
-    params:
-      selected_count: 2
-```
-
-策略实现 `on_day_close(trading_date, bars, context)`，返回 `code,target_weight`。D 日
-完整分钟数据只会生成 D 日收盘信号，最早在 D+1 的首个可成交 bar 执行，避免把未来 bar
-带入信号。`--validate-only` 可先检查数据截止日、股票数量和策略入口：
+## 运行入口
 
 ```bash
-python -m scripts.run_minute_backtest \
-  --config configs/minute_strategy.example.yaml \
-  --validate-only
+python -m pip install -e .
+python -m scripts.run_minute_backtest --config configs/unified_strategy_csi1000.example.yaml
+python -m scripts.run_minute_backtest --config configs/unified_factor_layers_csi1000.example.yaml
+python -m scripts.run_daily_paper --config configs/paper_csi1000.example.yaml --date 2026-11-12
 ```
 
-## 安装
+示例配置文件中的 `/REPLACE/` 路径需要按实际数据位置设置。股票池固定为当日有效中证1000成份（000852.SH），固定时间窗可以配置任何支持的有效交易分钟。交易委托股数按主板、创业板和科创板分别处理，成交数量允许发生零股部分成交。每个账户使用 `unit_nav = nav / initial_capital` 的复利净值累计方式。
 
-需要 Python 3.9 及以上版本。在项目根目录执行：
+## 数据和账户说明
 
-```bash
-python -m pip install .
-```
+分钟行情使用 `data/minute_bars/YYYY/YYYY-MM-DD.parquet`（每交易日一文件）的原始未复权价格和成交量，时间戳为北京时间每根分钟K线的结束时刻。日度涨跌停价格、停牌状态和公司行为由独立辅助数据提供。数据抓取沿用 `scripts.run_daily_paper` 的免费AKShare增量接口；原有日频因子研究与分组评价不依赖分钟撮合账户。
 
-## 准备 Wind 正式数据
+固定窗口成交的 `execution.order_time` 可以在有效交易时段中自定义，`execution.window_bars` 表示发单后可使用的已结束分钟根数。历史回测与逐日事后模拟均采用相同的 `src.intraday.execution` 撮合规则及 `src.intraday.engine` 现金持仓记账规则。
 
-原始 Wind Parquet 先整理成框架原生的年度 CSV 和指数成员目录：
+净值、订单和持仓等输出字段、历史指数成份格式、日频策略接口、所有配置字段详见 [`docs/unified_backtest_v4.md`](docs/unified_backtest_v4.md)，数据更新和每日账户字段也统一写在这份 v4 文档中。
 
-```bash
-python -m scripts.prepare_wind_formal_data \
-  --wind-cache-root /Users/qiye/Desktop/wind_cache \
-  --output-root /Users/qiye/Desktop/wind_cache/formal_factor_backtest \
-  --start 2024-01-02 \
-  --end 2026-09-09
-```
+## v4 变更
 
-整理后的目录完全遵循 `src.data.load_data` 的正式输入契约：
+- 正式账户只保留固定成交时间窗，`execution.order_time` 自定义发单时间，`execution.window_bars` 指定随后撮合的分钟数；移除 `bar_delay` 等失效兼容参数。
+- 09:31 发单从上日收盘价生成委托；若缺少必要的前日价格，明确报错，避免无订单也标记执行成功。
+- 每日事后账户仅下载实际持仓、当前目标和待补单股票；日终只保存每日快照，避免重复生成无用分钟持仓明细。
+- 持仓缺少可用估值价格时终止估值，不按零估值；关键股票的成交窗口行情缺失可被发现并补齐。
+- 日频旧 `simple/account` 回测入口、阶段配置、无效包装脚本已清理；日频因子评价仍保留。
 
-```text
-formal_factor_backtest/
-├── data_quality.json
-├── index/
-│   ├── members/{000906.SH,000852.SH}.csv
-│   └── prices/000906.SH_YYYY.csv
-└── stock/daily_quote/quote_YYYY.csv
-```
+## 运行条件
 
-当前源数据只提供 2026-09-08 成份快照，因此成员 CSV 明确使用静态股票池，历史结果
-存在生存者偏差；详细口径记录在整理目录的 `data_quality.json`。
+项目依赖包含 pandas、numpy、PyYAML、pyarrow 等库。WSL工作站需提供真实中证1000历史成份区间文件和相应分钟行情数据。免费接口的短历史窗口不能用来恢复很久以前缺失的一分钟K线，也不能由分钟价量准确确定涨停板排队位置。
 
-### 同步历史指数成份
 
-`scripts.sync_index_members` 把成份数据源与正式回测文件解耦。真实数据根遵循参考数据
-字典的 `index/members/<code>.csv` 布局；同步后统一校验日期、重复和重叠区间，并输出
-正式五字段成员文件：
+## 工作站自动分钟线更新
 
-```bash
-python -m scripts.sync_index_members \
-  --source filesystem \
-  --source-root /path/to/【指数增强策略】数据获取/data \
-  --output-root /Users/qiye/Desktop/wind_cache/formal_factor_backtest \
-  --index-code 000906.SH \
-  --index-code 000852.SH
-```
+运行目录为 `/home/qiye/zxy/backtest`，Python 环境为 `zxy_py310`。
+用户 crontab 在北京时间每日16:30启动中证1000一分钟行情下载，18:30和20:30重试。
+脚本按周末与行情最近交易日期识别休市日，使用锁文件控制单实例，支持逐股票断点续传。
+当日已发布文件中的空数据股票会通过 v4 增量逻辑重新抓取。
 
-本机没有外部数据根时，可用 deterministic synthetic 后端验证接口和 PIT 展开链路：
+手动入口为 `bash /home/qiye/zxy/backtest/scripts/run_daily_minutes.sh`。
+行情使用腾讯分钟K线与累计成交额差分，按每次请求间隔1.1秒限速。
+股票池保存中证指数官网每日观测快照，行情清单逐股票记录来源和异常分钟缺口。
+数据目录为 `/home/qiye/zxy/data/minute_bars`，股票覆盖率达到97%后发布日文件。
 
-```bash
-python -m scripts.sync_index_members \
-  --source synthetic \
-  --output-root /Users/qiye/Desktop/wind_cache/synthetic_index_members_formal \
-  --index-code 000906.SH \
-  --index-code 000852.SH \
-  --start 2010-01-01 \
-  --end 2026-09-09
-```
-
-synthetic 文件包含定期调入和调出区间，只用于接口、PIT 股票池和自动化测试，不能
-替代真实历史成份数据得出研究结论。未来接入 taidb 时实现同一个
-`IndexMemberSource.read()` 合同即可，正式框架无需修改。
-
-## 运行正式框架链路
-
-`configs/base_config.yaml` 已指向整理后的 Wind 数据。因子计算、分组收益、IC、两类
-回测和绘图全部由正式 CLI 编排：
-
-```bash
-python -m src.cli --config configs/base_config.yaml
-```
-
-日常数据同步使用独立增量入口，可一次传入多份共享市场缓存的配置：
-
-```bash
-python -m scripts.update_factor_cache CONFIG_1.yaml CONFIG_2.yaml
-```
-
-`--dry-run` 只报告数据来源和因子的预计更新方式，`--rebuild` 强制整套重建。
-命令以原始文件路径、大小和纳秒修改时间识别新增及历史修订，只刷新变化来源；
-日频年度来源从最早变化年份替换尾部，具有有界历史窗口的因子同步尾部重算。
-默认全历史的自定义因子会安全回退为全量重算。正式执行后，状态和报告保存在
-`market_data.cache_root/.state/` 与 `output.root/.state/`。
-
-正式结果按用途分开保存：
-
-```text
-outputs_wind/
-├── config_snapshot.yaml
-├── factors/<factor_name>/
-├── strategies/<strategy_name>/
-└── summaries/
-```
-
-因子目录包含 `factor.parquet`、按保留开关生成的评价或回测 Parquet，以及因子图；
-策略目录包含 `target_weights.parquet`、按保留开关生成的策略回测 Parquet，以及策略图。
-跨因子和跨策略汇总表统一放在 `summaries/`。
-
-## Factor YAML
-
-每个 YAML 显式声明可导入模块、类名和构造参数：
-
-```yaml
-name: return_20d
-implementation:
-  module: src.factors.ExampleFactor
-  class: ExampleFactor
-params:
-  lookback_days: 20
-```
-
-配置目录中的所有 `*.yaml` 会按文件名排序后动态导入并批量计算。
-
-## 直接回测已有因子 Parquet
-
-框架可以跳过 Factor 计算，直接读取一个或多个由本框架生成的原生日频
-`factor.parquet`。在主配置中关闭因子阶段，并显式声明最终因子名与文件路径：
-
-```yaml
-run:
-  factors: false
-  group_return: true
-  simple_backtest: true
-
-factors:
-  parquet_files:
-    momentum_20d: /data/factors/momentum_20d/factor.parquet
-    value_score: ../factor_inputs/value_score.parquet
-```
-
-相对路径以主配置文件所在目录为基准。`parquet_files` 与 `result_root` 互斥；前者
-直接列出文件，后者继续用于复用完整的框架因子结果目录。输入文件始终只读，不会被
-复制、覆盖或受 `output.save_parquet.factor` 控制，下游结果仍保存到
-`output.root/factors/<factor_name>/`。
-
-输入必须是单因子宽表：索引为唯一、升序且无时区的 `DatetimeIndex`，列为唯一股票
-代码，值只能是数值或 `NaN`。本入口不接受 `date/ts/code` 分钟长表，也不会自动做
-日频聚合、缺失填充或因子变体计算。输入因子仍按各评价和回测阶段配置的
-`factor_lag_days` 读取；因子历史可得性和 PIT 正确性由输入文件生产流程保证。
-
-## 分域研究
-
-主配置可通过 `factors.domain_config` 引用独立 domains YAML。文件中的
-`factor_names` 只选择需要分域的基础因子，其余因子仍按原配置计算；每个域作为与
-`raw`、`industry_neutral` 同级的 `domain_<name>` variant，从共享的截面处理结果
-直接生成。完整配置示例见 `configs/domains.example.yaml`。
-
-需要为选中的每个基础因子分别生成域对比 overall 大图时运行：
-
-```bash
-python -m scripts.run_domain_research \
-  --config /absolute/path/to/run.yaml
-```
-
-脚本只遍历 domains YAML 的 `factor_names`，共享一次 MarketData，并在
-`output.root/<base_factor_name>/00_overall/` 下输出因子分布和四周分组收益大图。
-正式长任务默认进入 tmux；本地前台运行时增加 `--foreground`，只校验配置时使用
-`--dry-run`。
-
-## 测试与检查
-
-```bash
-python -m unittest discover -s tests -v
-ruff check src examples scripts tests
-```
-
-运行静态检查前可通过 `python -m pip install '.[dev]'` 安装开发依赖。
-
-`examples/data/` 中的 compact synthetic 数据仅作为自动化测试 fixture，不再是项目
-默认数据源。端到端测试仍用它覆盖原始 CSV、市场缓存、动态 Factor、并行评价、两类
-回测、结果恢复和四类图像输出，从而保证测试不依赖本机 Wind 数据。
+完成邮件发送至 `783829986@qq.com`，按交易日保存发送回执。
+SMTP 授权文件位于 `/home/qiye/.config/backtest/qq_smtp_authorization`，权限为600。
+日志和状态位于 `/home/qiye/zxy/logs/backtest/`，分别为 `daily_minutes.log` 和 `latest_minutes.json`。
+工作站开机且WSL运行时执行定时更新。

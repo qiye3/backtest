@@ -6,7 +6,7 @@ from typing import Any, Mapping
 
 import pandas as pd
 
-from src.backtest.targets import rebalance_dates
+from src.strategy.schedule import rebalance_dates
 from src.data.market_data import MarketData
 from src.strategy.base import PortfolioRule
 

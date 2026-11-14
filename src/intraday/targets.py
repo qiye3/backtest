@@ -139,3 +139,57 @@ def _infer_exchange(digits: str) -> str:
     if digits.startswith(("4", "8", "9")):
         return "BJ"
     raise ValueError(f"无法根据代码推断交易所: {digits}")
+
+
+def load_strategy_output_targets(
+    path: str | Path,
+    rebalance_interval: int,
+    date_only_signal_time: str = "15:00:00",
+) -> pd.DataFrame:
+    """读取 src.strategy.io 的稀疏 target_weights.parquet，并转换为分钟账户完整目标。"""
+    if rebalance_interval <= 0:
+        raise ValueError("rebalance_interval 必须为正整数")
+    source = Path(path)
+    if source.suffix.lower() == ".parquet":
+        raw = pd.read_parquet(source)
+    elif source.suffix.lower() == ".csv":
+        raw = pd.read_csv(source, dtype={"stock_code": "string"})
+    else:
+        raise ValueError("策略目标输出只支持 CSV 或 Parquet")
+    required = {"date", "stock_code", "target_weight", "rebalance_interval"}
+    if not required.issubset(raw):
+        raise ValueError(f"strategy_output 缺少字段: {sorted(required - set(raw))}")
+    raw = raw[raw["rebalance_interval"].astype(int) == rebalance_interval].copy()
+    if raw.empty:
+        raise ValueError(f"策略产物没有 rebalance_interval={rebalance_interval} 的调仓记录")
+    for name in ("factor_name", "rebalance_frequency"):
+        if name in raw and raw[name].nunique(dropna=False) > 1:
+            raise ValueError(f"strategy_output 混有多个 {name}，请先分离策略")
+    raw["date"] = pd.to_datetime(raw["date"], errors="raise").dt.normalize()
+    if raw["date"].isna().any():
+        raise ValueError("strategy_output 的 date 不能为空")
+    records: list[dict[str, object]] = []
+    previous_codes: set[str] = set()
+    for date, frame in raw.groupby("date", sort=True):
+        valid = frame[frame["stock_code"].notna()].copy()
+        weights = {
+            normalize_stock_code(code): float(weight)
+            for code, weight in zip(valid["stock_code"], valid["target_weight"])
+        }
+        if len(weights) != len(valid):
+            raise ValueError(f"{date} 策略产物中包含重复股票代码")
+        # src.strategy.io 用 stock_code=NaN 的占位行表示该日无持仓。
+        # 分钟账户仍需要清仓指令，所以使用上一期非零股票的零权重来表达空目标。
+        if not weights:
+            weights = {code: 0.0 for code in previous_codes}
+        for code, weight in sorted(weights.items()):
+            records.append({
+                "signal_timestamp": str(date.date()),
+                "code": code,
+                "target_weight": weight,
+            })
+        previous_codes = {code for code, weight in weights.items() if weight > 0}
+    if not records:
+        # 首个调仓日为全现金且此前没有策略持仓，不需要生成可执行目标。
+        return normalize_target_weights(pd.DataFrame(columns=TARGET_COLUMNS), date_only_signal_time)
+    return normalize_target_weights(pd.DataFrame(records), date_only_signal_time)

@@ -48,8 +48,6 @@ class QualityFactorTests(unittest.TestCase):
         config["run"].update(
             {
                 "group_return": False,
-                "simple_backtest": False,
-                "account_backtest": False,
                 "plotter": False,
                 "overall_evaluation": False,
                 "max_workers": 2,
@@ -105,8 +103,6 @@ class QualityFactorTests(unittest.TestCase):
         enabled_stages = ("factors", "group_return", "overall_evaluation")
         self.assertTrue(all(template["run"][stage_name] for stage_name in enabled_stages))
         self.assertFalse(template["run"]["plotter"])
-        self.assertFalse(template["run"]["simple_backtest"])
-        self.assertFalse(template["run"]["account_backtest"])
 
     def test_cross_statement_ratio_uses_matching_pit_reports(self) -> None:
         """经营现金流与利润比率应在共同实际公告日按同报告期计算。"""
